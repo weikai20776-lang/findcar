@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>14 Pro 尋車雷達</title>
+    <script src="https://unpkg.com/tesseract.js@v4.0.1/dist/tesseract.min.js"></script>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+        #video { width: 100vw; height: 100vh; object-fit: cover; }
+        #overlay { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; pointer-events: none; }
+        .match { color: #ff3b30; font-weight: bold; font-size: 1.5em; animation: flash 0.5s infinite; }
+        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <video id="video" autoplay playsinline></video>
+    <div id="overlay">
+        <div>狀態: <span id="status">初始化中...</span></div>
+        <div id="result">目前無辨識結果</div>
+    </div>
+    <audio id="alarm" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+
+    <script>
+        // 【重要】在這裡輸入你的黑名單 (英文字母請大寫，不含橫槓)
+        const blackList = ["BUA9237", "ABC1234", "TEST001"];
+        
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const result = document.getElementById('result');
+        const alarm = document.getElementById('alarm');
+
+        // 啟動 iPhone 後鏡頭
+        navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: "environment", focusMode: "continuous" } 
+        }).then(stream => {
+            video.srcObject = stream;
+            status.innerText = "掃描中...";
+            startOCR();
+        });
+
+        async function startOCR() {
+            // 每 0.8 秒辨識一次，平衡速度與 14 Pro 的發熱量
+            setInterval(async () => {
+                const { data: { text } } = await Tesseract.recognize(video, 'eng');
+                const cleanText = text.replace(/[^A-Z0-9]/g, "").toUpperCase();
+                
+                if (cleanText.length >= 5) {
+                    result.innerText = "偵測到: " + cleanText;
+                    
+                    // 比對黑名單
+                    if (blackList.some(id => cleanText.includes(id))) {
+                        result.innerHTML = `<span class="match">🚨 發現目標: ${cleanText}</span>`;
+                        alarm.play(); // 播放警報
+                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]); // 手機震動
+                    }
+                }
+            }, 800);
+        }
+    </script>
+</body>
+</html>
