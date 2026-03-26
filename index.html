@@ -3,121 +3,126 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>14Pro 車牌即時截圖</title>
+    <title>14Pro 專業尋車雷達</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video { width: 100vw; height: 100vh; object-fit: cover; position: absolute; top: 0; left: 0; }
-        #startBtn { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px; font-size: 18px; background: #28a745; color: white; border: none; border-radius: 10px; z-index: 1000; }
-        #log { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 5px; font-size: 12px; color: #0f0; border-radius: 4px; z-index: 999; }
-        /* 截圖列表 */
-        #gallery { position: absolute; right: 10px; top: 10px; width: 150px; height: auto; display: flex; flex-direction: column-gap: 5px; overflow-y: scroll; pointer-events: none; z-index: 998; }
-        .gallery-item { width: 100%; border: 2px solid #fff; border-radius: 4px; background: #222; margin-bottom: 5px; }
-        .gallery-item img { width: 100%; height: auto; border-radius: 2px; }
+        body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; overflow: hidden; }
+        #video { width: 100vw; height: 100vh; object-fit: cover; position: fixed; top: 0; left: 0; }
+        
+        /* 頂部狀態列 */
+        #status-bar { position: fixed; top: 0; width: 100%; background: rgba(0,0,0,0.6); padding: 15px; z-index: 100; text-align: center; }
+        .badge { background: #28a745; color: white; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+        
+        /* 底部截圖列表 (模仿專業 App 佈局) */
+        #gallery { position: fixed; bottom: 0; left: 0; width: 100%; height: 200px; display: flex; overflow-x: auto; background: rgba(0,0,0,0.7); z-index: 100; border-top: 1px solid #444; align-items: center; }
+        .item { min-width: 220px; margin: 10px; border: 2px solid #0f0; border-radius: 8px; background: #111; position: relative; flex-shrink: 0; }
+        .item img { width: 100%; border-radius: 6px 6px 0 0; display: block; }
+        .item .plate-info { padding: 8px; background: #0f0; color: #000; font-weight: bold; text-align: center; font-size: 18px; }
+        .item .timestamp { font-size: 10px; background: #222; color: #aaa; text-align: center; padding: 2px; }
+
+        /* 啟動按鈕 */
+        #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 40px; font-size: 20px; background: #007aff; color: white; border: none; border-radius: 50px; z-index: 1000; box-shadow: 0 0 20px rgba(0,122,255,0.5); }
     </style>
 </head>
 <body>
     <video id="video" autoplay playsinline></video>
-    <div id="log">等待啟動...</div>
-    <div id="gallery"></div>
-    <button id="startBtn">1. 點擊啟動尋車 (5G環境佳)</button>
-
     <canvas id="canvas" style="display:none;"></canvas>
+    
+    <div id="status-bar"><span class="badge" id="msg">系統就緒 - 點擊啟動</span></div>
+    <button id="startBtn">啟動雷達掃描</button>
+    <div id="gallery"></div>
 
     <script>
         const video = document.getElementById('video');
-        const log = document.getElementById('log');
-        const gallery = document.getElementById('gallery');
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
+        const msg = document.getElementById('msg');
+        const gallery = document.getElementById('gallery');
+        const startBtn = document.getElementById('startBtn');
         let worker = null;
-        let lastPlate = ""; // 防止重複截圖
-        let isLooping = false;
+        let lastPlate = "";
 
-        async function initOCR() {
-            log.innerText += "\n[1/2] 載入辨識模型...";
+        async function initRadar() {
+            startBtn.style.display = 'none';
+            msg.innerText = "正在載入 AI 引擎...";
+            
+            // 1. 初始化 Tesseract 
             worker = await Tesseract.createWorker();
             await worker.loadLanguage('eng');
             await worker.initialize('eng');
-            // 只辨識大寫字母與數字，提高準確率
             await worker.setParameters({
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-', // 限制字元提高準度
             });
-            log.innerText += "\n[OK] 模型載入成功！";
-            startCamera();
-        }
 
-        function startCamera() {
-            log.innerText += "\n[2/2] 開啟 14 Pro 鏡頭...";
-            navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "environment", focusMode: "continuous" } 
-            }).then(stream => {
+            // 2. 開啟 iPhone 14 Pro 專業鏡頭模式
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: "environment", 
+                        width: { ideal: 1280 }, 
+                        height: { ideal: 720 },
+                        focusMode: "continuous"
+                    } 
+                });
                 video.srcObject = stream;
-                log.innerText += "\n[OK] 連續掃描中，請對準車牌...";
-                document.getElementById('startBtn').style.display = 'none';
-                if (!isLooping) {
-                    isLooping = true;
-                    loopOCR();
-                }
-            });
-        }
-
-        async function loopOCR() {
-            while (isLooping) {
-                try {
-                    // 1. 執行 Tesseract 即時辨識
-                    const { data: { text } } = await worker.recognize(video);
-                    const cleanText = text.replace(/[^A-Z0-9]/g, "").toUpperCase();
-                    
-                    // 2. 當辨識出車牌 (至少 5 個字)，且號碼有變動時
-                    if (cleanText.length >= 5 && cleanText !== lastPlate) {
-                        log.innerText = "偵測到車牌: " + cleanText;
-                        lastPlate = cleanText;
-                        capturePlate(cleanText); // 執行裁切與存證
-                    }
-                } catch (e) { console.error(e); }
-                // 暫停 1秒，避免 14 Pro 過熱
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                msg.innerText = "🔴 雷達掃描中...";
+                runOCR();
+            } catch (err) {
+                msg.innerText = "相機開啟失敗，請檢查權限";
             }
         }
 
-        function capturePlate(plateText) {
-            //設定畫布大小 (針對車牌形狀裁剪畫面)
-            //從 iPhone 的影像流中，抓取中間一個約 400x200 的區域
-            canvas.width = 400;
-            canvas.height = 200;
+        async function runOCR() {
+            while (true) {
+                // 3. 影像預處理：針對翻拍螢幕與行進間優化
+                canvas.width = 800;
+                canvas.height = 450;
+                
+                // 濾鏡強化：降低亮度防止螢幕過曝，提高對比突顯文字
+                ctx.filter = 'contrast(180%) brightness(85%) grayscale(100%)';
+                
+                // 全域掃描：確保車牌不在中央也能抓到
+                ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, 800, 450);
 
-            // 1. 抓取影像到畫布：將 video 的中央部分繪製到 canvas 上
-            // (dx, dy, dw, dh, sx, sy, sw, sh)
-            ctx.drawImage(video, video.videoWidth/2 - 200, video.videoHeight/2 - 100, 400, 200, 0, 0, 400, 200);
+                const { data: { text } } = await worker.recognize(canvas);
+                const plate = text.replace(/[^A-Z0-9-]/g, "").trim();
 
-            // 2. 覆疊號碼：在 canvas 左下角印上車牌號碼
-            ctx.font = 'bold 30px sans-serif';
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; // 白色文字
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';   // 黑色描邊
-            ctx.lineWidth = 4;
-            
-            ctx.strokeText(plateText, 10, canvas.height - 15); // 印描邊
-            ctx.fillText(plateText, 10, canvas.height - 15);   // 印文字
-
-            // 3. 將 canvas 轉為圖片並加入列表
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.8); // 轉為 JPEG
-            addGalleryItem(dataUrl, plateText);
+                // 4. 判斷是否為有效車牌且非重複抓取
+                if (plate.length >= 5 && plate.length <= 8 && plate !== lastPlate) {
+                    lastPlate = plate;
+                    addCapture(canvas.toDataURL('image/jpeg', 0.8), plate);
+                    
+                    // 掃描成功震動回饋
+                    if (navigator.vibrate) navigator.vibrate(50);
+                }
+                
+                // 每 0.6 秒辨識一次，平衡效能與電力
+                await new Promise(r => setTimeout(r, 600));
+            }
         }
 
-        function addGalleryItem(src, text) {
-            const div = document.createElement('div');
-            div.className = 'gallery-item';
-            div.innerHTML = `<img src="${src}" alt="${text}">`;
+        function addCapture(imgData, plateNo) {
+            const now = new Date();
+            const timeStr = now.toLocaleString();
             
-            // 加入到列表最前方，並只保留最後 3 張
+            const div = document.createElement('div');
+            div.className = 'item';
+            div.innerHTML = `
+                <img src="${imgData}">
+                <div class="plate-info">${plateNo}</div>
+                <div class="timestamp">${timeStr}</div>
+            `;
+            
+            // 將最新結果放在最前面
             gallery.prepend(div);
-            if (gallery.children.length > 3) {
+            
+            // 最多保留 20 筆紀錄
+            if (gallery.children.length > 20) {
                 gallery.removeChild(gallery.lastChild);
             }
         }
 
-        document.getElementById('startBtn').addEventListener('click', initOCR);
+        startBtn.onclick = initRadar;
     </script>
 </body>
 </html>
