@@ -3,32 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>14Pro 專業尋車雷達</title>
+    <title>14Pro 廣角尋車雷達 V5</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; overflow: hidden; }
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
         #video { width: 100vw; height: 100vh; object-fit: cover; position: fixed; top: 0; left: 0; }
         
         /* 頂部狀態列 */
         #status-bar { position: fixed; top: 0; width: 100%; background: rgba(0,0,0,0.6); padding: 15px; z-index: 100; text-align: center; }
         .badge { background: #28a745; color: white; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; }
         
-        /* 底部截圖列表 (模仿專業 App 佈局) */
-        #gallery { position: fixed; bottom: 0; left: 0; width: 100%; height: 200px; display: flex; overflow-x: auto; background: rgba(0,0,0,0.7); z-index: 100; border-top: 1px solid #444; align-items: center; }
-        .item { min-width: 220px; margin: 10px; border: 2px solid #0f0; border-radius: 8px; background: #111; position: relative; flex-shrink: 0; }
-        .item img { width: 100%; border-radius: 6px 6px 0 0; display: block; }
-        .item .plate-info { padding: 8px; background: #0f0; color: #000; font-weight: bold; text-align: center; font-size: 18px; }
-        .item .timestamp { font-size: 10px; background: #222; color: #aaa; text-align: center; padding: 2px; }
+        /* 下方截圖清單 */
+        #gallery { position: fixed; bottom: 0; left: 0; width: 100%; height: 220px; display: flex; overflow-x: auto; background: rgba(0,0,0,0.8); z-index: 100; border-top: 1px solid #444; align-items: center; }
+        .item { min-width: 200px; margin: 10px; border: 2px solid #0f0; border-radius: 8px; background: #111; flex-shrink: 0; overflow: hidden; }
+        .item img { width: 100%; display: block; }
+        .item .plate-info { padding: 10px; background: #0f0; color: #000; font-weight: bold; text-align: center; font-size: 18px; }
 
-        /* 啟動按鈕 */
-        #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 40px; font-size: 20px; background: #007aff; color: white; border: none; border-radius: 50px; z-index: 1000; box-shadow: 0 0 20px rgba(0,122,255,0.5); }
+        #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 40px; font-size: 20px; background: #007aff; color: white; border: none; border-radius: 50px; z-index: 1000; }
     </style>
 </head>
 <body>
     <video id="video" autoplay playsinline></video>
     <canvas id="canvas" style="display:none;"></canvas>
     
-    <div id="status-bar"><span class="badge" id="msg">系統就緒 - 點擊啟動</span></div>
+    <div id="status-bar"><span class="badge" id="msg">等待啟動...</span></div>
     <button id="startBtn">啟動雷達掃描</button>
     <div id="gallery"></div>
 
@@ -44,82 +42,54 @@
 
         async function initRadar() {
             startBtn.style.display = 'none';
-            msg.innerText = "正在載入 AI 引擎...";
+            msg.innerText = "載入中...";
             
-            // 1. 初始化 Tesseract 
             worker = await Tesseract.createWorker();
             await worker.loadLanguage('eng');
             await worker.initialize('eng');
             await worker.setParameters({
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-', // 限制字元提高準度
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
             });
 
-            // 2. 開啟 iPhone 14 Pro 專業鏡頭模式
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { 
-                        facingMode: "environment", 
-                        width: { ideal: 1280 }, 
-                        height: { ideal: 720 },
-                        focusMode: "continuous"
-                    } 
-                });
-                video.srcObject = stream;
-                msg.innerText = "🔴 雷達掃描中...";
-                runOCR();
-            } catch (err) {
-                msg.innerText = "相機開啟失敗，請檢查權限";
-            }
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: 1280, height: 720 } 
+            });
+            video.srcObject = stream;
+            msg.innerText = "🔴 掃描中 - 車牌不需對準中央";
+            runOCR();
         }
 
         async function runOCR() {
             while (true) {
-                // 3. 影像預處理：針對翻拍螢幕與行進間優化
-                canvas.width = 800;
-                canvas.height = 450;
+                // 將 Canvas 設為與影片比例一致，確保全畫面掃描
+                canvas.width = 640;
+                canvas.height = 360;
                 
-                // 濾鏡強化：降低亮度防止螢幕過曝，提高對比突顯文字
+                // 針對 iPhone 14 Pro 翻拍螢幕優化：對比強化 + 亮度調降
                 ctx.filter = 'contrast(180%) brightness(85%) grayscale(100%)';
                 
-                // 全域掃描：確保車牌不在中央也能抓到
-                ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, 800, 450);
+                // 【關鍵修改】直接抓取全畫面，不進行特定區域裁切
+                ctx.drawImage(video, 0, 0, 640, 360);
 
                 const { data: { text } } = await worker.recognize(canvas);
                 const plate = text.replace(/[^A-Z0-9-]/g, "").trim();
 
-                // 4. 判斷是否為有效車牌且非重複抓取
+                // 辨識成功邏輯
                 if (plate.length >= 5 && plate.length <= 8 && plate !== lastPlate) {
                     lastPlate = plate;
                     addCapture(canvas.toDataURL('image/jpeg', 0.8), plate);
-                    
-                    // 掃描成功震動回饋
                     if (navigator.vibrate) navigator.vibrate(50);
                 }
-                
-                // 每 0.6 秒辨識一次，平衡效能與電力
                 await new Promise(r => setTimeout(r, 600));
             }
         }
 
         function addCapture(imgData, plateNo) {
-            const now = new Date();
-            const timeStr = now.toLocaleString();
-            
             const div = document.createElement('div');
             div.className = 'item';
-            div.innerHTML = `
-                <img src="${imgData}">
-                <div class="plate-info">${plateNo}</div>
-                <div class="timestamp">${timeStr}</div>
-            `;
-            
-            // 將最新結果放在最前面
+            div.innerHTML = `<img src="${imgData}"><div class="plate-info">${plateNo}</div>`;
             gallery.prepend(div);
-            
-            // 最多保留 20 筆紀錄
-            if (gallery.children.length > 20) {
-                gallery.removeChild(gallery.lastChild);
-            }
+            if (gallery.children.length > 15) gallery.removeChild(gallery.lastChild);
         }
 
         startBtn.onclick = initRadar;
