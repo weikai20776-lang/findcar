@@ -3,60 +3,121 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>14 Pro 尋車雷達</title>
-    <script src="https://unpkg.com/tesseract.js@v4.0.1/dist/tesseract.min.js"></script>
+    <title>14Pro 車牌即時截圖</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video { width: 100vw; height: 100vh; object-fit: cover; }
-        #overlay { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; pointer-events: none; }
-        .match { color: #ff3b30; font-weight: bold; font-size: 1.5em; animation: flash 0.5s infinite; }
-        @keyframes flash { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
+        #video { width: 100vw; height: 100vh; object-fit: cover; position: absolute; top: 0; left: 0; }
+        #startBtn { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px; font-size: 18px; background: #28a745; color: white; border: none; border-radius: 10px; z-index: 1000; }
+        #log { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 5px; font-size: 12px; color: #0f0; border-radius: 4px; z-index: 999; }
+        /* 截圖列表 */
+        #gallery { position: absolute; right: 10px; top: 10px; width: 150px; height: auto; display: flex; flex-direction: column-gap: 5px; overflow-y: scroll; pointer-events: none; z-index: 998; }
+        .gallery-item { width: 100%; border: 2px solid #fff; border-radius: 4px; background: #222; margin-bottom: 5px; }
+        .gallery-item img { width: 100%; height: auto; border-radius: 2px; }
     </style>
 </head>
 <body>
     <video id="video" autoplay playsinline></video>
-    <div id="overlay">
-        <div>狀態: <span id="status">初始化中...</span></div>
-        <div id="result">目前無辨識結果</div>
-    </div>
-    <audio id="alarm" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+    <div id="log">等待啟動...</div>
+    <div id="gallery"></div>
+    <button id="startBtn">1. 點擊啟動尋車 (5G環境佳)</button>
+
+    <canvas id="canvas" style="display:none;"></canvas>
 
     <script>
-        // 【重要】在這裡輸入你的黑名單 (英文字母請大寫，不含橫槓)
-        const blackList = ["BUA-9237", "ABC1234", "TEST001"];
-        
         const video = document.getElementById('video');
-        const status = document.getElementById('status');
-        const result = document.getElementById('result');
-        const alarm = document.getElementById('alarm');
+        const log = document.getElementById('log');
+        const gallery = document.getElementById('gallery');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let worker = null;
+        let lastPlate = ""; // 防止重複截圖
+        let isLooping = false;
 
-        // 啟動 iPhone 後鏡頭
-        navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: "environment", focusMode: "continuous" } 
-        }).then(stream => {
-            video.srcObject = stream;
-            status.innerText = "掃描中...";
-            startOCR();
-        });
-
-        async function startOCR() {
-            // 每 0.8 秒辨識一次，平衡速度與 14 Pro 的發熱量
-            setInterval(async () => {
-                const { data: { text } } = await Tesseract.recognize(video, 'eng');
-                const cleanText = text.replace(/[^A-Z0-9]/g, "").toUpperCase();
-                
-                if (cleanText.length >= 5) {
-                    result.innerText = "偵測到: " + cleanText;
-                    
-                    // 比對黑名單
-                    if (blackList.some(id => cleanText.includes(id))) {
-                        result.innerHTML = `<span class="match">🚨 發現目標: ${cleanText}</span>`;
-                        alarm.play(); // 播放警報
-                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]); // 手機震動
-                    }
-                }
-            }, 800);
+        async function initOCR() {
+            log.innerText += "\n[1/2] 載入辨識模型...";
+            worker = await Tesseract.createWorker();
+            await worker.loadLanguage('eng');
+            await worker.initialize('eng');
+            // 只辨識大寫字母與數字，提高準確率
+            await worker.setParameters({
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+            });
+            log.innerText += "\n[OK] 模型載入成功！";
+            startCamera();
         }
+
+        function startCamera() {
+            log.innerText += "\n[2/2] 開啟 14 Pro 鏡頭...";
+            navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", focusMode: "continuous" } 
+            }).then(stream => {
+                video.srcObject = stream;
+                log.innerText += "\n[OK] 連續掃描中，請對準車牌...";
+                document.getElementById('startBtn').style.display = 'none';
+                if (!isLooping) {
+                    isLooping = true;
+                    loopOCR();
+                }
+            });
+        }
+
+        async function loopOCR() {
+            while (isLooping) {
+                try {
+                    // 1. 執行 Tesseract 即時辨識
+                    const { data: { text } } = await worker.recognize(video);
+                    const cleanText = text.replace(/[^A-Z0-9]/g, "").toUpperCase();
+                    
+                    // 2. 當辨識出車牌 (至少 5 個字)，且號碼有變動時
+                    if (cleanText.length >= 5 && cleanText !== lastPlate) {
+                        log.innerText = "偵測到車牌: " + cleanText;
+                        lastPlate = cleanText;
+                        capturePlate(cleanText); // 執行裁切與存證
+                    }
+                } catch (e) { console.error(e); }
+                // 暫停 1秒，避免 14 Pro 過熱
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        function capturePlate(plateText) {
+            //設定畫布大小 (針對車牌形狀裁剪畫面)
+            //從 iPhone 的影像流中，抓取中間一個約 400x200 的區域
+            canvas.width = 400;
+            canvas.height = 200;
+
+            // 1. 抓取影像到畫布：將 video 的中央部分繪製到 canvas 上
+            // (dx, dy, dw, dh, sx, sy, sw, sh)
+            ctx.drawImage(video, video.videoWidth/2 - 200, video.videoHeight/2 - 100, 400, 200, 0, 0, 400, 200);
+
+            // 2. 覆疊號碼：在 canvas 左下角印上車牌號碼
+            ctx.font = 'bold 30px sans-serif';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; // 白色文字
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';   // 黑色描邊
+            ctx.lineWidth = 4;
+            
+            ctx.strokeText(plateText, 10, canvas.height - 15); // 印描邊
+            ctx.fillText(plateText, 10, canvas.height - 15);   // 印文字
+
+            // 3. 將 canvas 轉為圖片並加入列表
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8); // 轉為 JPEG
+            addGalleryItem(dataUrl, plateText);
+        }
+
+        function addGalleryItem(src, text) {
+            const div = document.createElement('div');
+            div.className = 'gallery-item';
+            div.innerHTML = `<img src="${src}" alt="${text}">`;
+            
+            // 加入到列表最前方，並只保留最後 3 張
+            gallery.prepend(div);
+            if (gallery.children.length > 3) {
+                gallery.removeChild(gallery.lastChild);
+            }
+        }
+
+        document.getElementById('startBtn').addEventListener('click', initOCR);
     </script>
 </body>
 </html>
