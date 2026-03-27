@@ -3,31 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>14Pro 廣角尋車雷達 V5</title>
+    <title>14Pro 實戰雷達 V7</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
         #video { width: 100vw; height: 100vh; object-fit: cover; position: fixed; top: 0; left: 0; }
+        #status-bar { position: fixed; top: 0; width: 100%; background: rgba(0,0,0,0.75); padding: 12px; z-index: 100; text-align: center; border-bottom: 2px solid #0f0; }
+        .badge { background: #ff0000; color: white; padding: 4px 15px; border-radius: 15px; font-weight: bold; font-size: 14px; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
         
-        /* 頂部狀態列 */
-        #status-bar { position: fixed; top: 0; width: 100%; background: rgba(0,0,0,0.6); padding: 15px; z-index: 100; text-align: center; }
-        .badge { background: #28a745; color: white; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; }
-        
-        /* 下方截圖清單 */
-        #gallery { position: fixed; bottom: 0; left: 0; width: 100%; height: 220px; display: flex; overflow-x: auto; background: rgba(0,0,0,0.8); z-index: 100; border-top: 1px solid #444; align-items: center; }
-        .item { min-width: 200px; margin: 10px; border: 2px solid #0f0; border-radius: 8px; background: #111; flex-shrink: 0; overflow: hidden; }
+        #gallery { position: fixed; bottom: 0; left: 0; width: 100%; height: 150px; display: flex; overflow-x: auto; background: rgba(0,0,0,0.8); z-index: 100; border-top: 1px solid #444; align-items: center; }
+        .item { min-width: 150px; margin: 8px; border: 1px solid #0f0; border-radius: 6px; background: #111; flex-shrink: 0; overflow: hidden; }
         .item img { width: 100%; display: block; }
-        .item .plate-info { padding: 10px; background: #0f0; color: #000; font-weight: bold; text-align: center; font-size: 18px; }
+        .item .plate-info { padding: 5px; background: #0f0; color: #000; font-weight: bold; text-align: center; font-size: 16px; }
 
-        #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 40px; font-size: 20px; background: #007aff; color: white; border: none; border-radius: 50px; z-index: 1000; }
+        #focus-guide { position: fixed; top: 35%; left: 10%; width: 80%; height: 25%; border: 2px solid rgba(0,255,0,0.6); border-radius: 10px; pointer-events: none; z-index: 50; box-shadow: 0 0 0 1000px rgba(0,0,0,0.3); }
+        #startBtn { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 20px 40px; font-size: 20px; background: #28a745; color: white; border: none; border-radius: 50px; z-index: 1000; }
     </style>
 </head>
 <body>
     <video id="video" autoplay playsinline></video>
+    <div id="focus-guide"></div>
     <canvas id="canvas" style="display:none;"></canvas>
     
     <div id="status-bar"><span class="badge" id="msg">等待啟動...</span></div>
-    <button id="startBtn">啟動雷達掃描</button>
+    <button id="startBtn">啟動實戰掃描</button>
     <div id="gallery"></div>
 
     <script>
@@ -42,45 +42,56 @@
 
         async function initRadar() {
             startBtn.style.display = 'none';
-            msg.innerText = "載入中...";
+            msg.innerText = "引擎初始化中...";
             
             worker = await Tesseract.createWorker();
             await worker.loadLanguage('eng');
             await worker.initialize('eng');
             await worker.setParameters({
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+                tessedit_pageseg_mode: '7', 
             });
 
+            // 調整為 720p 以獲得更高幀率，對移動辨識更有利
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: "environment", width: 1280, height: 720 } 
             });
             video.srcObject = stream;
-            msg.innerText = "🔴 掃描中 - 車牌不需對準中央";
+            msg.innerText = "REC 正在偵測...";
             runOCR();
         }
 
         async function runOCR() {
             while (true) {
-                // 將 Canvas 設為與影片比例一致，確保全畫面掃描
+                // 模擬專業 App 的快速採樣
                 canvas.width = 640;
                 canvas.height = 360;
                 
-                // 針對 iPhone 14 Pro 翻拍螢幕優化：對比強化 + 亮度調降
-                ctx.filter = 'contrast(180%) brightness(85%) grayscale(100%)';
+                // 【V7 修正】戶外實測濾鏡：不過度拉高對比，避免雜訊
+                // 使用適度的對比與灰階即可
+                ctx.filter = 'contrast(150%) brightness(100%) grayscale(100%)';
                 
-                // 【關鍵修改】直接抓取全畫面，不進行特定區域裁切
-                ctx.drawImage(video, 0, 0, 640, 360);
+                // 抓取對焦框內的影像
+                ctx.drawImage(video, video.videoWidth*0.1, video.videoHeight*0.35, video.videoWidth*0.8, video.videoHeight*0.25, 0, 0, 640, 360);
 
-                const { data: { text } } = await worker.recognize(canvas);
+                const { data: { text, confidence } } = await worker.recognize(canvas);
                 const plate = text.replace(/[^A-Z0-9-]/g, "").trim();
 
-                // 辨識成功邏輯
-                if (plate.length >= 5 && plate.length <= 8 && plate !== lastPlate) {
+                // 信心門檻微調至 55，並檢查長度是否符合台灣車牌（5-7碼）
+                if (plate.length >= 5 && plate.length <= 8 && confidence > 55 && plate !== lastPlate) {
                     lastPlate = plate;
-                    addCapture(canvas.toDataURL('image/jpeg', 0.8), plate);
-                    if (navigator.vibrate) navigator.vibrate(50);
+                    
+                    // 建立截圖：使用當前影片畫面（彩色）
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = 400;
+                    tempCanvas.height = 225;
+                    tempCanvas.getContext('2d').drawImage(video, 0, 0, 400, 225);
+                    
+                    addCapture(tempCanvas.toDataURL('image/jpeg', 0.7), plate);
+                    if (navigator.vibrate) navigator.vibrate([50, 30]); // 雙重震動感
                 }
-                await new Promise(r => setTimeout(r, 600));
+                // 加快循環速度
+                await new Promise(r => setTimeout(r, 300)); 
             }
         }
 
