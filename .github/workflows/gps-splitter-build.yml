@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: windows-2025-vs2026
+
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
@@ -32,48 +33,54 @@ jobs:
         with:
           repository: microsoft/Windows-driver-samples
           path: deps/windows-driver-samples
+          submodules: recursive
 
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
       - name: Restore WDK NuGet packages
         shell: pwsh
+        working-directory: deps/windows-driver-samples
         run: |
-          nuget restore deps\windows-driver-samples\packages.config -PackagesDirectory deps\windows-driver-samples\packages
+          nuget restore .\packages.config -PackagesDirectory .\packages\
 
-      - name: Apply GPS Virtual COM INF
+      - name: Apply GPS driver customization
         shell: pwsh
         run: |
           Copy-Item gps-splitter\driver\virtualserial2um.inx deps\windows-driver-samples\serial\VirtualSerial2\ComPort\virtualserial2um.inx -Force
+          .\gps-splitter\driver\patch_virtualserial.ps1
 
-      - name: Build UMDF virtual serial driver
+      - name: Build VirtualSerial2 with official sample build environment
         shell: pwsh
+        working-directory: deps/windows-driver-samples
         run: |
-          msbuild deps\windows-driver-samples\serial\VirtualSerial2\ComPort\VirtualSerial2um.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off
+          .\Build-Samples.ps1 -Samples 'serial.virtualserial2' -Configurations 'Release' -Platforms 'x64' -RunMode NuGet -ThrottleLimit 1
 
-      - name: Build DevCon
+      - name: Build DevCon with official sample build environment
         shell: pwsh
+        working-directory: deps/windows-driver-samples
         run: |
-          msbuild deps\windows-driver-samples\setup\devcon\devcon.vcxproj /m /p:Configuration=Release /p:Platform=x64
+          .\Build-Samples.ps1 -Samples 'setup.devcon' -Configurations 'Release' -Platforms 'x64' -RunMode NuGet -ThrottleLimit 1
 
-      - name: Collect driver files
+      - name: Collect test package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build_bundle\driver | Out-Null
+
           $dll = Get-ChildItem deps\windows-driver-samples\serial\VirtualSerial2 -Recurse -Filter VirtualSerial2um.dll | Select-Object -First 1
           $inf = Get-ChildItem deps\windows-driver-samples\serial\VirtualSerial2 -Recurse -Filter virtualserial2um.inf | Select-Object -First 1
           $cat = Get-ChildItem deps\windows-driver-samples\serial\VirtualSerial2 -Recurse -Filter WUDF.cat | Select-Object -First 1
           $devcon = Get-ChildItem deps\windows-driver-samples\setup\devcon -Recurse -Filter devcon.exe | Select-Object -First 1
+
           if (-not $dll) { throw "VirtualSerial2um.dll not found" }
           if (-not $inf) { throw "virtualserial2um.inf not found" }
           if (-not $devcon) { throw "devcon.exe not found" }
+
           Copy-Item $dll.FullName build_bundle\driver\VirtualSerial2um.dll
           Copy-Item $inf.FullName build_bundle\driver\virtualserial2um.inf
           if ($cat) { Copy-Item $cat.FullName build_bundle\driver\WUDF.cat }
           Copy-Item $devcon.FullName build_bundle\driver\devcon.exe
+
           Copy-Item gps-splitter\driver\install_test.cmd build_bundle\driver\install_test.cmd
           Copy-Item gps-splitter\driver\uninstall_test.cmd build_bundle\driver\uninstall_test.cmd
           Copy-Item gps-splitter\README.md build_bundle\README.md
