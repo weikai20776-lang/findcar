@@ -1,4 +1,5 @@
 import ctypes
+from ctypes import wintypes
 import json
 import os
 import threading
@@ -13,6 +14,29 @@ APP_NAME = "GPS 多程式分流器"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gps_splitter_config.json")
 BAUDRATES = [4800, 9600, 19200, 38400, 57600, 115200]
 
+# CTL_CODE(FILE_DEVICE_SERIAL_PORT=0x1B, Function=0x800,
+#          METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)
+IOCTL_GPSVCOM_INJECT = 0x001B2000
+
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+    wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE
+]
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.DeviceIoControl.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+    wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID
+]
+kernel32.DeviceIoControl.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
@@ -22,18 +46,76 @@ except Exception:
         pass
 
 
+class VirtualComFeeder:
+    """Writes bytes into the RX buffer of one GPS virtual COM port.
+
+    The handle is opened through a secondary control symbolic link with
+    DesiredAccess=0. The IOCTL is FILE_ANY_ACCESS. This is intentionally
+    separate from the public COMx path so a third-party program can own COMx
+    exclusively while GPS_Splitter injects NMEA bytes.
+    """
+
+    def __init__(self, com_number: int):
+        self.com_number = int(com_number)
+        self.path = rf"\\.\GPSVCOMCTL_COM{self.com_number}"
+        self.handle = None
+
+    def open(self):
+        h = kernel32.CreateFileW(
+            self.path,
+            0,  # no read/write access; custom IOCTL uses FILE_ANY_ACCESS
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if h == INVALID_HANDLE_VALUE or h is None:
+            err = ctypes.get_last_error()
+            raise OSError(err, f"無法開啟虛擬 COM 控制通道 {self.path}")
+        self.handle = h
+
+    def write(self, data: bytes):
+        if not data:
+            return
+        if self.handle is None:
+            raise OSError("虛擬 COM 控制通道尚未開啟")
+        buf = ctypes.create_string_buffer(data, len(data))
+        returned = wintypes.DWORD(0)
+        ok = kernel32.DeviceIoControl(
+            self.handle,
+            IOCTL_GPSVCOM_INJECT,
+            ctypes.byref(buf),
+            len(data),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            err = ctypes.get_last_error()
+            raise OSError(err, f"寫入 COM{self.com_number} 失敗")
+
+    def close(self):
+        if self.handle not in (None, INVALID_HANDLE_VALUE):
+            kernel32.CloseHandle(self.handle)
+        self.handle = None
+
+
 class GPSSplitter:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
+
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(1000, sw - 80), min(820, sh - 100)
         root.geometry(f"{w}x{h}+{max(0,(sw-w)//2)}+{max(0,(sh-h)//2)}")
         root.minsize(820, 650)
+        root.resizable(True, True)
 
         self.running = False
         self.gps_serial = None
-        self.output_serials = {}
+        self.output_feeders = {}
         self.detected_baud = None
         self.nmea_buffer = ""
         self.latitude = "-"
@@ -61,8 +143,10 @@ class GPSSplitter:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
-        title = tk.Label(self.root, text=APP_NAME, font=("Microsoft JhengHei", 22, "bold"))
-        title.grid(row=0, column=0, pady=(12, 8))
+        tk.Label(
+            self.root, text=APP_NAME,
+            font=("Microsoft JhengHei", 22, "bold")
+        ).grid(row=0, column=0, pady=(12, 8))
 
         body = ttk.Frame(self.root)
         body.grid(row=1, column=0, sticky="nsew", padx=15)
@@ -71,9 +155,13 @@ class GPSSplitter:
         src = ttk.LabelFrame(body, text=" GPS 來源 ", padding=(12, 8))
         src.grid(row=0, column=0, sticky="ew", pady=4)
         ttk.Label(src, text="GPS COM：COM").pack(side="left")
-        self.source_port = ttk.Entry(src, width=7, validate="key", validatecommand=self.number_vcmd)
+        self.source_port = ttk.Entry(
+            src, width=7, validate="key", validatecommand=self.number_vcmd
+        )
         self.source_port.pack(side="left", padx=(3, 18))
-        ttk.Button(src, text="測試 / 自動偵測 Baud", command=self.start_baud_scan).pack(side="left")
+        ttk.Button(
+            src, text="測試 / 自動偵測 Baud", command=self.start_baud_scan
+        ).pack(side="left")
 
         info_row = ttk.Frame(body)
         info_row.grid(row=1, column=0, sticky="ew", pady=4)
@@ -81,8 +169,10 @@ class GPSSplitter:
         info_row.columnconfigure(1, weight=1)
 
         status = ttk.LabelFrame(info_row, text=" GPS 狀態 ", padding=(12, 8))
-        status.grid(row=0, column=0, sticky="nsew", padx=(0,4))
-        self.gps_status_label = tk.Label(status, text="● 未連線", font=("Microsoft JhengHei", 12))
+        status.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self.gps_status_label = tk.Label(
+            status, text="● 未連線", font=("Microsoft JhengHei", 12)
+        )
         self.gps_status_label.pack(anchor="w", pady=2)
         self.baud_label = tk.Label(status, text="Baud Rate：尚未偵測")
         self.baud_label.pack(anchor="w", pady=2)
@@ -90,7 +180,7 @@ class GPSSplitter:
         self.fix_label.pack(anchor="w", pady=2)
 
         gpsinfo = ttk.LabelFrame(info_row, text=" GPS 資訊 ", padding=(12, 8))
-        gpsinfo.grid(row=0, column=1, sticky="nsew", padx=(4,0))
+        gpsinfo.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self.lat_label = tk.Label(gpsinfo, text="緯度：-", font=("Consolas", 10))
         self.lon_label = tk.Label(gpsinfo, text="經度：-", font=("Consolas", 10))
         self.sat_label = tk.Label(gpsinfo, text="衛星：-")
@@ -100,21 +190,29 @@ class GPSSplitter:
 
         out = ttk.LabelFrame(body, text=" GPS 輸出（最多 5 路） ", padding=(12, 6))
         out.grid(row=2, column=0, sticky="ew", pady=4)
-        self.output_enabled, self.output_ports, self.output_status_labels = [], [], []
-        defaults = ["5","6","7","8","9"]
+        self.output_enabled = []
+        self.output_ports = []
+        self.output_status_labels = []
+        defaults = ["5", "6", "7", "8", "9"]
+
         ttk.Label(out, text="啟用", width=10).grid(row=0, column=0)
         ttk.Label(out, text="輸出 COM", width=14).grid(row=0, column=1)
-        ttk.Label(out, text="狀態", width=32, anchor="w").grid(row=0, column=2)
+        ttk.Label(out, text="狀態", width=38, anchor="w").grid(row=0, column=2)
+
         for i, d in enumerate(defaults):
             enabled = tk.BooleanVar(value=False)
-            ttk.Checkbutton(out, text=f"輸出 {i+1}", variable=enabled).grid(row=i+1, column=0, sticky="w", pady=2)
+            ttk.Checkbutton(out, text=f"輸出 {i+1}", variable=enabled).grid(
+                row=i+1, column=0, sticky="w", pady=2
+            )
             pf = ttk.Frame(out)
             pf.grid(row=i+1, column=1, sticky="w", pady=2)
             ttk.Label(pf, text="COM").pack(side="left")
-            entry = ttk.Entry(pf, width=6, validate="key", validatecommand=self.number_vcmd)
+            entry = ttk.Entry(
+                pf, width=6, validate="key", validatecommand=self.number_vcmd
+            )
             entry.insert(0, d)
-            entry.pack(side="left", padx=(3,0))
-            sl = tk.Label(out, text="未啟用", width=32, anchor="w")
+            entry.pack(side="left", padx=(3, 0))
+            sl = tk.Label(out, text="未啟用", width=38, anchor="w")
             sl.grid(row=i+1, column=2, sticky="w", padx=8)
             self.output_enabled.append(enabled)
             self.output_ports.append(entry)
@@ -122,20 +220,28 @@ class GPSSplitter:
 
         buttons = ttk.Frame(body)
         buttons.grid(row=3, column=0, pady=6)
-        ttk.Button(buttons, text="開始分流", width=14, command=self.start_splitter).pack(side="left", padx=8)
-        ttk.Button(buttons, text="停止", width=14, command=self.stop_splitter).pack(side="left", padx=8)
+        ttk.Button(
+            buttons, text="開始分流", width=14, command=self.start_splitter
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            buttons, text="停止", width=14, command=self.stop_splitter
+        ).pack(side="left", padx=8)
 
-        traffic = ttk.LabelFrame(self.root, text=" 資料狀態 ", padding=(10,5))
-        traffic.grid(row=2, column=0, sticky="ew", padx=15, pady=(4,2))
-        self.rx_label = tk.Label(traffic, text="RX：0 bytes/s", font=("Consolas",10))
+        traffic = ttk.LabelFrame(self.root, text=" 資料狀態 ", padding=(10, 5))
+        traffic.grid(row=2, column=0, sticky="ew", padx=15, pady=(4, 2))
+        self.rx_label = tk.Label(traffic, text="RX：0 bytes/s", font=("Consolas", 10))
         self.rx_label.pack(side="left", padx=8)
-        self.tx_label = tk.Label(traffic, text="TX：0 / 0 / 0 / 0 / 0 bytes/s", font=("Consolas",10))
+        self.tx_label = tk.Label(
+            traffic, text="TX：0 / 0 / 0 / 0 / 0 bytes/s", font=("Consolas", 10)
+        )
         self.tx_label.pack(side="left", padx=25)
 
         logf = ttk.LabelFrame(self.root, text=" 系統訊息 ", padding=5)
-        logf.grid(row=3, column=0, sticky="ew", padx=15, pady=(2,10))
+        logf.grid(row=3, column=0, sticky="ew", padx=15, pady=(2, 10))
         logf.columnconfigure(0, weight=1)
-        self.log_box = tk.Text(logf, height=7, state="disabled", font=("Consolas",9), wrap="word")
+        self.log_box = tk.Text(
+            logf, height=7, state="disabled", font=("Consolas", 9), wrap="word"
+        )
         self.log_box.grid(row=0, column=0, sticky="ew")
         sb = ttk.Scrollbar(logf, orient="vertical", command=self.log_box.yview)
         sb.grid(row=0, column=1, sticky="ns")
@@ -158,7 +264,9 @@ class GPSSplitter:
         if not n:
             messagebox.showwarning("提示", "請輸入 GPS COM 編號")
             return
-        threading.Thread(target=self.detect_baud, args=(self.com_name(n),), daemon=True).start()
+        threading.Thread(
+            target=self.detect_baud, args=(self.com_name(n),), daemon=True
+        ).start()
 
     def detect_baud(self, port):
         self.log(f"開始偵測 {port} Baud Rate...")
@@ -166,7 +274,9 @@ class GPSSplitter:
         for baud in BAUDRATES:
             self.log(f"測試 {port} @ {baud}")
             try:
-                ser = serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=0.8)
+                ser = serial.Serial(
+                    port, baud, bytesize=8, parity="N", stopbits=1, timeout=0.8
+                )
                 ser.reset_input_buffer()
                 start, valid = time.time(), 0
                 while time.time() - start < 4:
@@ -174,27 +284,41 @@ class GPSSplitter:
                     if not raw:
                         continue
                     text = raw.decode("ascii", errors="ignore").strip()
-                    if text.startswith("$") and any(x in text for x in ("RMC","GGA","GLL")):
+                    if text.startswith("$") and any(
+                        x in text for x in ("RMC", "GGA", "GLL")
+                    ):
                         valid += 1
                     if valid >= 2:
                         ser.close()
                         time.sleep(1.0)
                         self.detected_baud = baud
-                        self.root.after(0, lambda b=baud: self.baud_label.config(text=f"Baud Rate：{b}"))
-                        self.root.after(0, lambda: self.gps_status_label.config(text="● GPS 已找到"))
+                        self.root.after(
+                            0, lambda b=baud: self.baud_label.config(
+                                text=f"Baud Rate：{b}"
+                            )
+                        )
+                        self.root.after(
+                            0, lambda: self.gps_status_label.config(
+                                text="● GPS 已找到"
+                            )
+                        )
                         self.log(f"成功：{port} @ {baud}")
                         self.save_config()
                         return
                 ser.close()
             except Exception as e:
                 self.log(f"{baud}：{e}")
+
         self.detected_baud = None
         self.root.after(0, lambda: self.gps_status_label.config(text="● 找不到 GPS"))
-        self.root.after(0, lambda: self.baud_label.config(text="Baud Rate：偵測失敗"))
+        self.root.after(
+            0, lambda: self.baud_label.config(text="Baud Rate：偵測失敗")
+        )
 
     def start_splitter(self):
         if self.running:
             return
+
         source_n = self.source_port.get().strip()
         if not source_n:
             messagebox.showwarning("錯誤", "請輸入 GPS COM 編號")
@@ -214,7 +338,9 @@ class GPSSplitter:
                 return
             p = self.com_name(n)
             if p == source:
-                messagebox.showwarning("錯誤", f"輸出 {i+1} 不可與 GPS來源 {source} 相同")
+                messagebox.showwarning(
+                    "錯誤", f"輸出 {i+1} 不可與 GPS來源 {source} 相同"
+                )
                 return
             if p in seen:
                 messagebox.showwarning("錯誤", f"{p} 被重複使用")
@@ -230,10 +356,16 @@ class GPSSplitter:
         while self.running:
             try:
                 self.log(f"連接 GPS：{source} @ {self.detected_baud}")
-                self.gps_serial = serial.Serial(source, self.detected_baud, bytesize=8, parity="N", stopbits=1, timeout=0.2)
+                self.gps_serial = serial.Serial(
+                    source, self.detected_baud,
+                    bytesize=8, parity="N", stopbits=1, timeout=0.2
+                )
                 self.gps_serial.reset_input_buffer()
                 self.open_outputs()
-                self.root.after(0, lambda: self.gps_status_label.config(text="● 已連線"))
+                self.root.after(
+                    0, lambda: self.gps_status_label.config(text="● 已連線")
+                )
+
                 while self.running:
                     waiting = self.gps_serial.in_waiting
                     if waiting:
@@ -243,53 +375,78 @@ class GPSSplitter:
                         self.parse_nmea(data)
                     else:
                         time.sleep(0.01)
+
             except Exception as e:
                 self.log(f"GPS 斷線：{e}")
-                self.root.after(0, lambda: self.gps_status_label.config(text="● GPS 已斷線"))
+                self.root.after(
+                    0, lambda: self.gps_status_label.config(text="● GPS 已斷線")
+                )
                 self.close_ports()
                 if self.running:
                     self.log("2 秒後自動重新連線...")
                     time.sleep(2)
+
         self.close_ports()
 
     def open_outputs(self):
-        self.output_serials = {}
+        self.output_feeders = {}
         for i in range(5):
             if not self.output_enabled[i].get():
-                self.root.after(0, lambda n=i: self.output_status_labels[n].config(text="未啟用"))
+                self.root.after(
+                    0, lambda n=i: self.output_status_labels[n].config(text="未啟用")
+                )
                 continue
-            port = self.com_name(self.output_ports[i].get())
+
+            n = self.output_ports[i].get().strip()
             try:
-                ser = serial.Serial(port, self.detected_baud, bytesize=8, parity="N", stopbits=1, timeout=0, write_timeout=0.5)
-                self.output_serials[i] = ser
-                self.root.after(0, lambda n=i, p=port: self.output_status_labels[n].config(text=f"● 已開啟 {p}"))
-                self.log(f"輸出 {i+1}：{port} 已開啟")
+                feeder = VirtualComFeeder(int(n))
+                feeder.open()
+                self.output_feeders[i] = feeder
+                self.root.after(
+                    0,
+                    lambda idx=i, p=n: self.output_status_labels[idx].config(
+                        text=f"● 已連接虛擬 COM{p}"
+                    ),
+                )
+                self.log(
+                    f"輸出 {i+1}：COM{n} 控制通道已開啟，"
+                    f"第三方程式可直接使用 COM{n}"
+                )
             except Exception as e:
-                self.root.after(0, lambda n=i: self.output_status_labels[n].config(text="● 開啟失敗"))
-                self.log(f"輸出 {i+1} {port} 開啟失敗：{e}")
+                self.root.after(
+                    0,
+                    lambda idx=i: self.output_status_labels[idx].config(
+                        text="● 驅動/控制通道不存在"
+                    ),
+                )
+                self.log(f"輸出 {i+1} COM{n} 開啟失敗：{e}")
 
     def forward_data(self, data):
         dead = []
-        for i, ser in list(self.output_serials.items()):
+        for i, feeder in list(self.output_feeders.items()):
             try:
-                ser.write(data)
+                feeder.write(data)
                 self.tx_bytes[i] += len(data)
             except Exception as e:
                 self.log(f"輸出 {i+1} 發生錯誤：{e}")
                 dead.append(i)
+
         for i in dead:
             try:
-                self.output_serials[i].close()
+                self.output_feeders[i].close()
             except Exception:
                 pass
-            self.output_serials.pop(i, None)
-            self.root.after(0, lambda n=i: self.output_status_labels[n].config(text="● 已斷線"))
+            self.output_feeders.pop(i, None)
+            self.root.after(
+                0, lambda n=i: self.output_status_labels[n].config(text="● 已斷線")
+            )
 
     def parse_nmea(self, data):
         try:
             self.nmea_buffer += data.decode("ascii", errors="ignore")
             if len(self.nmea_buffer) > 10000:
                 self.nmea_buffer = self.nmea_buffer[-5000:]
+
             while "\n" in self.nmea_buffer:
                 line, self.nmea_buffer = self.nmea_buffer.split("\n", 1)
                 line = line.strip()
@@ -309,7 +466,9 @@ class GPSSplitter:
                             pass
                     elif isinstance(msg, pynmea2.types.talker.GGA):
                         try:
-                            self.fix_status = "有效" if int(msg.gps_qual or 0) > 0 else "無效"
+                            self.fix_status = (
+                                "有效" if int(msg.gps_qual or 0) > 0 else "無效"
+                            )
                             self.satellites = int(msg.num_sats or 0)
                         except Exception:
                             pass
@@ -324,14 +483,26 @@ class GPSSplitter:
             pass
 
     def update_gps_ui(self):
-        lat = f"{self.latitude:.8f}" if isinstance(self.latitude, float) else str(self.latitude)
-        lon = f"{self.longitude:.8f}" if isinstance(self.longitude, float) else str(self.longitude)
-        spd = f"{self.speed:.1f}" if isinstance(self.speed, (int,float)) else "-"
+        lat = (
+            f"{self.latitude:.8f}"
+            if isinstance(self.latitude, float) else str(self.latitude)
+        )
+        lon = (
+            f"{self.longitude:.8f}"
+            if isinstance(self.longitude, float) else str(self.longitude)
+        )
+        spd = f"{self.speed:.1f}" if isinstance(self.speed, (int, float)) else "-"
         self.root.after(0, lambda: self.lat_label.config(text=f"緯度：{lat}"))
         self.root.after(0, lambda: self.lon_label.config(text=f"經度：{lon}"))
-        self.root.after(0, lambda: self.sat_label.config(text=f"衛星：{self.satellites}"))
-        self.root.after(0, lambda: self.speed_label.config(text=f"速度：{spd} km/h"))
-        self.root.after(0, lambda: self.fix_label.config(text=f"定位：{self.fix_status}"))
+        self.root.after(
+            0, lambda: self.sat_label.config(text=f"衛星：{self.satellites}")
+        )
+        self.root.after(
+            0, lambda: self.speed_label.config(text=f"速度：{spd} km/h")
+        )
+        self.root.after(
+            0, lambda: self.fix_label.config(text=f"定位：{self.fix_status}")
+        )
 
     def stop_splitter(self):
         self.running = False
@@ -346,16 +517,17 @@ class GPSSplitter:
         except Exception:
             pass
         self.gps_serial = None
-        for ser in list(self.output_serials.values()):
+
+        for feeder in list(self.output_feeders.values()):
             try:
-                ser.close()
+                feeder.close()
             except Exception:
                 pass
-        self.output_serials = {}
+        self.output_feeders = {}
 
     def update_stats(self):
         rx, tx = self.rx_bytes, self.tx_bytes[:]
-        self.rx_bytes, self.tx_bytes = 0, [0]*5
+        self.rx_bytes, self.tx_bytes = 0, [0] * 5
         self.rx_label.config(text=f"RX：{rx} bytes/s")
         self.tx_label.config(text="TX：" + " / ".join(map(str, tx)) + " bytes/s")
         self.root.after(1000, self.update_stats)
@@ -364,7 +536,13 @@ class GPSSplitter:
         cfg = {
             "source": self.source_port.get(),
             "baud": self.detected_baud,
-            "outputs": [{"enabled": self.output_enabled[i].get(), "port": self.output_ports[i].get()} for i in range(5)]
+            "outputs": [
+                {
+                    "enabled": self.output_enabled[i].get(),
+                    "port": self.output_ports[i].get(),
+                }
+                for i in range(5)
+            ],
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -374,7 +552,7 @@ class GPSSplitter:
 
     def load_config(self):
         self.source_port.insert(0, "11")
-        defaults = ["5","6","7","8","9"]
+        defaults = ["5", "6", "7", "8", "9"]
         if not os.path.exists(CONFIG_FILE):
             return
         try:
