@@ -83,7 +83,32 @@ jobs:
 
           Copy-Item gps-splitter\driver\install_test.cmd build_bundle\driver\install_test.cmd
           Copy-Item gps-splitter\driver\uninstall_test.cmd build_bundle\driver\uninstall_test.cmd
+          Copy-Item gps-splitter\driver\enable_test_mode.cmd build_bundle\driver\enable_test_mode.cmd
+          Copy-Item gps-splitter\driver\disable_test_mode.cmd build_bundle\driver\disable_test_mode.cmd
           Copy-Item gps-splitter\README.md build_bundle\README.md
+
+      - name: Create and apply test signing certificate
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=GPS Splitter Test Certificate" -CertStoreLocation "Cert:\CurrentUser\My" -HashAlgorithm SHA256 -KeyLength 2048 -KeyExportPolicy Exportable -NotAfter (Get-Date).AddYears(2)
+          Export-Certificate -Cert $cert -FilePath build_bundle\driver\GPSVCOM-Test.cer | Out-Null
+
+          $passwordText = "GpsSplitterCiTestOnly-2026"
+          $password = ConvertTo-SecureString -String $passwordText -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "$env:RUNNER_TEMP\gpsvcom-test.pfx" -Password $password | Out-Null
+
+          $signtool = Get-ChildItem deps\windows-driver-samples\packages -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+
+          & $signtool.FullName sign /as /fd SHA256 /f "$env:RUNNER_TEMP\gpsvcom-test.pfx" /p $passwordText build_bundle\driver\WUDF.cat
+          if ($LASTEXITCODE -ne 0) { throw "SignTool signing failed" }
+
+          & $signtool.FullName verify /pa /v build_bundle\driver\WUDF.cat
+          if ($LASTEXITCODE -ne 0) { throw "SignTool verification failed" }
+
+          Remove-Item "$env:RUNNER_TEMP\gpsvcom-test.pfx" -Force
 
       - name: Upload Windows prototype
         uses: actions/upload-artifact@v4
