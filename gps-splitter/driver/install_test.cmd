@@ -24,6 +24,12 @@ if not exist "GPSVCOM-Test.cer" (
   exit /b 1
 )
 
+if not exist "WDKTestCert.cer" (
+  echo ERROR: WDKTestCert.cer not found.
+  pause
+  exit /b 1
+)
+
 if not exist "devcon.exe" (
   echo ERROR: devcon.exe not found.
   pause
@@ -48,10 +54,16 @@ if errorlevel 1 (
   exit /b 2
 )
 
-echo Installing test certificate...
+echo Installing GPS catalog test certificate...
 certutil -f -addstore Root "GPSVCOM-Test.cer"
 if errorlevel 1 goto :cert_error
 certutil -f -addstore TrustedPublisher "GPSVCOM-Test.cer"
+if errorlevel 1 goto :cert_error
+
+echo Installing WDK driver binary test certificate...
+certutil -f -addstore Root "WDKTestCert.cer"
+if errorlevel 1 goto :cert_error
+certutil -f -addstore TrustedPublisher "WDKTestCert.cer"
 if errorlevel 1 goto :cert_error
 
 for %%P in (5 6 7 8 9) do (
