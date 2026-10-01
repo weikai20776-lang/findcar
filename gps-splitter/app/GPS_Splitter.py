@@ -57,7 +57,7 @@ class VirtualComFeeder:
 
     def __init__(self, com_number: int):
         self.com_number = int(com_number)
-        self.path = rf"\\.\GPSVCOMCTL_COM{self.com_number}"
+        self.path = rf"\\.\COM{self.com_number}"
         self.handle = None
 
     def open(self):
@@ -72,7 +72,7 @@ class VirtualComFeeder:
         )
         if h == INVALID_HANDLE_VALUE or h is None:
             err = ctypes.get_last_error()
-            raise OSError(err, f"無法開啟虛擬 COM 控制通道 {self.path}")
+            raise OSError(err, f"無法開啟虛擬 COM{self.com_number} 控制通道")
         self.handle = h
 
     def write(self, data: bytes):
