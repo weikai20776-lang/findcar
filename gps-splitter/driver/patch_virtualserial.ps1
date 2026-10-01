@@ -35,6 +35,15 @@ $includeReplacement = @'
 // DesiredAccess=0, avoiding share conflicts with the program that owns COMx.
 //
 #define IOCTL_GPSVCOM_INJECT CTL_CODE(FILE_DEVICE_SERIAL_PORT, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct _GPS_SERIAL_STATUS {
+    ULONG   Errors;
+    ULONG   HoldReasons;
+    ULONG   AmountInInQueue;
+    ULONG   AmountInOutQueue;
+    BOOLEAN EofReceived;
+    BOOLEAN WaitForImmediate;
+} GPS_SERIAL_STATUS, *PGPS_SERIAL_STATUS;
 '@
 if (-not $txt.Contains($includeNeedle)) {
     throw "queue.c include patch anchor not found"
@@ -46,6 +55,61 @@ $caseNeedle = @'
 '@
 
 $caseReplacement = @'
+    case IOCTL_SERIAL_GET_COMMSTATUS:
+    {
+        GPS_SERIAL_STATUS commStatus = {0};
+        size_t availableData = 0;
+
+        RingBufferGetAvailableData(
+                    &queueContext->RingBuffer,
+                    &availableData);
+
+        commStatus.Errors = 0;
+        commStatus.HoldReasons = 0;
+        commStatus.AmountInInQueue =
+            (availableData > MAXULONG) ? MAXULONG : (ULONG)availableData;
+        commStatus.AmountInOutQueue = 0;
+        commStatus.EofReceived = FALSE;
+        commStatus.WaitForImmediate = FALSE;
+
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &commStatus,
+                    sizeof(commStatus));
+        break;
+    }
+
+    case IOCTL_SERIAL_PURGE:
+    {
+        ULONG purgeMask = 0;
+
+        status = RequestCopyToBuffer(
+                    Request,
+                    &purgeMask,
+                    sizeof(purgeMask));
+
+        if (NT_SUCCESS(status)) {
+            RingBufferInitialize(
+                    &queueContext->RingBuffer,
+                    queueContext->Buffer,
+                    sizeof(queueContext->Buffer));
+        }
+
+        break;
+    }
+
+    case IOCTL_SERIAL_GET_MODEMSTATUS:
+    case IOCTL_SERIAL_GET_DTRRTS:
+    case IOCTL_SERIAL_GET_WAIT_MASK:
+    {
+        ULONG value = 0;
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &value,
+                    sizeof(value));
+        break;
+    }
+
     case IOCTL_GPSVCOM_INJECT:
     {
         WDFMEMORY memory;
