@@ -86,11 +86,9 @@ jobs:
           Copy-Item gps-splitter\driver\enable_test_mode.cmd build_bundle\driver\enable_test_mode.cmd
           Copy-Item gps-splitter\driver\disable_test_mode.cmd build_bundle\driver\disable_test_mode.cmd
 
-          $wdkCert = Get-ChildItem Cert:\CurrentUser\My |
-            Where-Object { $_.Subject -like "CN=WDKTestCert*" } |
-            Sort-Object NotBefore -Descending |
-            Select-Object -First 1
-          if (-not $wdkCert) { throw "WDKTestCert not found in CurrentUser certificate store" }
+          $driverSignature = Get-AuthenticodeSignature $dll.FullName
+          $wdkCert = $driverSignature.SignerCertificate
+          if (-not $wdkCert) { throw "Could not extract signer certificate from VirtualSerial2um.dll" }
           Export-Certificate -Cert $wdkCert -FilePath build_bundle\driver\WDKTestCert.cer | Out-Null
 
           Copy-Item gps-splitter\README.md build_bundle\README.md
