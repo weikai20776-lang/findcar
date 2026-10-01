@@ -85,6 +85,14 @@ jobs:
           Copy-Item gps-splitter\driver\uninstall_test.cmd build_bundle\driver\uninstall_test.cmd
           Copy-Item gps-splitter\driver\enable_test_mode.cmd build_bundle\driver\enable_test_mode.cmd
           Copy-Item gps-splitter\driver\disable_test_mode.cmd build_bundle\driver\disable_test_mode.cmd
+
+          $wdkCert = Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.Subject -like "CN=WDKTestCert*" } |
+            Sort-Object NotBefore -Descending |
+            Select-Object -First 1
+          if (-not $wdkCert) { throw "WDKTestCert not found in CurrentUser certificate store" }
+          Export-Certificate -Cert $wdkCert -FilePath build_bundle\driver\WDKTestCert.cer | Out-Null
+
           Copy-Item gps-splitter\README.md build_bundle\README.md
 
       - name: Create and apply test signing certificate
