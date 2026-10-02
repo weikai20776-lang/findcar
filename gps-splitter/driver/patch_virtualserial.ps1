@@ -21,6 +21,14 @@ $txt = $txt.Replace(
     "#define DATA_BUFFER_SIZE 1024",
     "#define DATA_BUFFER_SIZE 65536"
 )
+$txt = $txt.Replace(
+    "    WDFQUEUE        WaitMaskQueue;      // Manual queue for pending ioctl wait-on-mask",
+    "    WDFQUEUE        WaitMaskQueue;      // Manual queue for pending ioctl wait-on-mask`r`n`r`n    ULONG           WaitMask;           // Current SetCommMask value"
+)
+$txt = $txt.Replace(
+    "    WDFQUEUE        WaitMaskQueue;      // Manual queue for pending ioctl wait-on-mask",
+    "    WDFQUEUE        WaitMaskQueue;      // Manual queue for pending ioctl wait-on-mask`n`n    ULONG           WaitMask;           // Current SetCommMask value"
+)
 Set-Content $queueH $txt -Encoding utf8
 
 # Add custom injection IOCTL.
@@ -92,6 +100,81 @@ $caseNeedle = @'
 '@
 
 $caseReplacement = @'
+    case IOCTL_SERIAL_WAIT_ON_MASK:
+    {
+        size_t availableData = 0;
+        ULONG eventMask = 0;
+
+        RingBufferGetAvailableData(
+                    &queueContext->RingBuffer,
+                    &availableData);
+
+        if ((availableData > 0) &&
+            (queueContext->WaitMask & SERIAL_EV_RXCHAR)) {
+            eventMask = SERIAL_EV_RXCHAR;
+            status = RequestCopyFromBuffer(
+                        Request,
+                        &eventMask,
+                        sizeof(eventMask));
+            break;
+        }
+
+        status = WdfRequestForwardToIoQueue(
+                    Request,
+                    queueContext->WaitMaskQueue);
+
+        if (!NT_SUCCESS(status)) {
+            WdfRequestComplete(Request, status);
+        }
+
+        // Pending overlapped WaitCommEvent; do not complete here.
+        return;
+    }
+
+    case IOCTL_SERIAL_SET_WAIT_MASK:
+    {
+        ULONG waitMask = 0;
+        WDFREQUEST savedRequest;
+
+        status = RequestCopyToBuffer(
+                    Request,
+                    &waitMask,
+                    sizeof(waitMask));
+
+        if (NT_SUCCESS(status)) {
+            queueContext->WaitMask = waitMask;
+
+            // Per serial semantics, changing the wait mask completes an
+            // outstanding WaitCommEvent with an event mask of zero.
+            status = WdfIoQueueRetrieveNextRequest(
+                        queueContext->WaitMaskQueue,
+                        &savedRequest);
+
+            if (NT_SUCCESS(status)) {
+                ULONG zeroMask = 0;
+                NTSTATUS copyStatus = RequestCopyFromBuffer(
+                                        savedRequest,
+                                        &zeroMask,
+                                        sizeof(zeroMask));
+                WdfRequestComplete(savedRequest, copyStatus);
+            }
+
+            status = STATUS_SUCCESS;
+        }
+
+        break;
+    }
+
+    case IOCTL_SERIAL_GET_WAIT_MASK:
+    {
+        ULONG waitMask = queueContext->WaitMask;
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &waitMask,
+                    sizeof(waitMask));
+        break;
+    }
+
     case IOCTL_SERIAL_GET_CHARS:
     {
         GPS_SERIAL_CHARS chars = {0};
@@ -140,11 +223,41 @@ $caseReplacement = @'
 
         properties.PacketLength = (USHORT)sizeof(properties);
         properties.PacketVersion = 2;
-        properties.ServiceMask = 1;
+        properties.ServiceMask = SERIAL_SP_SERIALCOMM;
         properties.MaxTxQueue = 0;
         properties.MaxRxQueue = 65536;
-        properties.MaxBaud = 115200;
-        properties.ProvSubType = 1;
+        properties.MaxBaud = SERIAL_BAUD_USER;
+        properties.SettableBaud = SERIAL_BAUD_USER;
+        properties.ProvSubType = SERIAL_SP_RS232;
+        properties.ProvCapabilities =
+            SERIAL_PCF_DTRDSR |
+            SERIAL_PCF_RTSCTS |
+            SERIAL_PCF_PARITY_CHECK |
+            SERIAL_PCF_XONXOFF |
+            SERIAL_PCF_SETXCHAR |
+            SERIAL_PCF_TOTALTIMEOUTS |
+            SERIAL_PCF_INTTIMEOUTS;
+        properties.SettableParams =
+            SERIAL_SP_PARITY |
+            SERIAL_SP_BAUD |
+            SERIAL_SP_DATABITS |
+            SERIAL_SP_STOPBITS |
+            SERIAL_SP_HANDSHAKING |
+            SERIAL_SP_PARITY_CHECK;
+        properties.SettableData =
+            SERIAL_DATABITS_5 |
+            SERIAL_DATABITS_6 |
+            SERIAL_DATABITS_7 |
+            SERIAL_DATABITS_8;
+        properties.SettableStopParity =
+            SERIAL_STOPBITS_10 |
+            SERIAL_STOPBITS_15 |
+            SERIAL_STOPBITS_20 |
+            SERIAL_PARITY_NONE |
+            SERIAL_PARITY_ODD |
+            SERIAL_PARITY_EVEN |
+            SERIAL_PARITY_MARK |
+            SERIAL_PARITY_SPACE;
         properties.CurrentTxQueue = 0;
         properties.CurrentRxQueue = 65536;
 
@@ -200,7 +313,6 @@ $caseReplacement = @'
 
     case IOCTL_SERIAL_GET_MODEMSTATUS:
     case IOCTL_SERIAL_GET_DTRRTS:
-    case IOCTL_SERIAL_GET_WAIT_MASK:
     {
         ULONG value = 0;
         status = RequestCopyFromBuffer(
@@ -229,6 +341,29 @@ $caseReplacement = @'
                                 &queueContext->RingBuffer,
                                 inputBuffer,
                                 InputBufferLength);
+            }
+        }
+
+        //
+        // Signal legacy event-driven serial clients such as MSComm32.OCX.
+        // MSComm uses SetCommMask(EV_RXCHAR) + overlapped WaitCommEvent.
+        //
+        if (NT_SUCCESS(status) &&
+            InputBufferLength > 0 &&
+            (queueContext->WaitMask & SERIAL_EV_RXCHAR)) {
+
+            WDFREQUEST waitRequest;
+            NTSTATUS waitStatus = WdfIoQueueRetrieveNextRequest(
+                                    queueContext->WaitMaskQueue,
+                                    &waitRequest);
+
+            if (NT_SUCCESS(waitStatus)) {
+                ULONG eventMask = SERIAL_EV_RXCHAR;
+                NTSTATUS copyStatus = RequestCopyFromBuffer(
+                                        waitRequest,
+                                        &eventMask,
+                                        sizeof(eventMask));
+                WdfRequestComplete(waitRequest, copyStatus);
             }
         }
 
@@ -267,6 +402,24 @@ $caseReplacement = @'
 if (-not $txt.Contains($caseNeedle)) {
     throw "queue.c IOCTL patch anchor not found"
 }
+# Initialize legacy WaitCommEvent state.
+$txt = $txt.Replace(
+    "    RingBufferInitialize(&queueContext->RingBuffer,`r`n                            queueContext->Buffer,`r`n                            sizeof(queueContext->Buffer));",
+    "    RingBufferInitialize(&queueContext->RingBuffer,`r`n                            queueContext->Buffer,`r`n                            sizeof(queueContext->Buffer));`r`n    queueContext->WaitMask = 0;"
+)
+$txt = $txt.Replace(
+    "    RingBufferInitialize(&queueContext->RingBuffer,`n                            queueContext->Buffer,`n                            sizeof(queueContext->Buffer));",
+    "    RingBufferInitialize(&queueContext->RingBuffer,`n                            queueContext->Buffer,`n                            sizeof(queueContext->Buffer));`n    queueContext->WaitMask = 0;"
+)
+
+# Replace the original sample's incomplete wait-mask implementation with
+# MSComm-compatible handlers inserted below.
+$txt = [regex]::Replace(
+    $txt,
+    '(?s)    case IOCTL_SERIAL_WAIT_ON_MASK:\s*\{.*?\n    \}\n\n    case IOCTL_SERIAL_SET_WAIT_MASK:\s*\{.*?\n    \}\n',
+    ''
+)
+
 # Remove the four no-op cases from the unmodified Microsoft sample BEFORE
 # inserting the V4 handlers, so there are no duplicate switch case values.
 $txt = [regex]::Replace(
@@ -276,6 +429,24 @@ $txt = [regex]::Replace(
 )
 
 $txt = $txt.Replace($caseNeedle, $caseReplacement)
+
+# MSComm32.OCX can issue CLRDTR and legacy break/immediate-char IOCTLs.
+$txt = $txt.Replace(
+    "    case IOCTL_SERIAL_SET_DTR:`r`n",
+    "    case IOCTL_SERIAL_SET_DTR:`r`n    case IOCTL_SERIAL_CLR_DTR:`r`n"
+)
+$txt = $txt.Replace(
+    "    case IOCTL_SERIAL_SET_DTR:`n",
+    "    case IOCTL_SERIAL_SET_DTR:`n    case IOCTL_SERIAL_CLR_DTR:`n"
+)
+$txt = $txt.Replace(
+    "    case IOCTL_SERIAL_RESET_DEVICE:`r`n",
+    "    case IOCTL_SERIAL_SET_BREAK_ON:`r`n    case IOCTL_SERIAL_SET_BREAK_OFF:`r`n    case IOCTL_SERIAL_IMMEDIATE_CHAR:`r`n    case IOCTL_SERIAL_RESET_DEVICE:`r`n"
+)
+$txt = $txt.Replace(
+    "    case IOCTL_SERIAL_RESET_DEVICE:`n",
+    "    case IOCTL_SERIAL_SET_BREAK_ON:`n    case IOCTL_SERIAL_SET_BREAK_OFF:`n    case IOCTL_SERIAL_IMMEDIATE_CHAR:`n    case IOCTL_SERIAL_RESET_DEVICE:`n"
+)
 
 Set-Content $queueC $txt -Encoding utf8
 
