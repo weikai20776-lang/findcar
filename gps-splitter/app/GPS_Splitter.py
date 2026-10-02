@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox
 
 import pynmea2
 import serial
+from serial.tools import list_ports
 
 APP_NAME = "GPS 多程式分流器"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gps_splitter_config.json")
@@ -125,6 +126,7 @@ class GPSSplitter:
         self.fix_status = "-"
         self.rx_bytes = 0
         self.tx_bytes = [0] * 5
+        self.scan_in_progress = False
         self.number_vcmd = (root.register(self.only_number), "%P")
 
         self.build_ui()
@@ -160,7 +162,10 @@ class GPSSplitter:
         )
         self.source_port.pack(side="left", padx=(3, 18))
         ttk.Button(
-            src, text="測試 / 自動偵測 Baud", command=self.start_baud_scan
+            src, text="自動尋找 GPS", command=self.start_port_scan
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            src, text="測試目前 COM / 偵測 Baud", command=self.start_baud_scan
         ).pack(side="left")
 
         info_row = ttk.Frame(body)
@@ -258,6 +263,115 @@ class GPSSplitter:
             except Exception:
                 pass
         self.root.after(0, add)
+
+    def start_port_scan(self):
+        if self.running:
+            messagebox.showwarning("提示", "請先停止 GPS 分流")
+            return
+        if self.scan_in_progress:
+            return
+        self.scan_in_progress = True
+        threading.Thread(target=self.detect_gps_port, daemon=True).start()
+
+    def detect_gps_port(self):
+        try:
+            ports = list(list_ports.comports())
+            # Skip our own virtual output ports; they are destinations, not GPS sources.
+            ports = [
+                p for p in ports
+                if "GPS Virtual Serial Port" not in (p.description or "")
+            ]
+            def port_key(p):
+                name = (p.device or "").upper()
+                try:
+                    return int(name.replace("COM", ""))
+                except Exception:
+                    return 9999
+
+            ports.sort(key=port_key)
+            if not ports:
+                self.log("找不到可掃描的實體 COM 裝置")
+                self.root.after(
+                    0, lambda: self.gps_status_label.config(text="● 找不到 GPS")
+                )
+                return
+
+            self.root.after(
+                0, lambda: self.gps_status_label.config(text="● 正在自動尋找 GPS...")
+            )
+            self.log(
+                "自動尋找 GPS：" +
+                ", ".join(p.device for p in ports if p.device)
+            )
+
+            for port_info in ports:
+                port = port_info.device
+                for baud in BAUDRATES:
+                    if not self.scan_in_progress:
+                        return
+                    self.log(f"掃描 {port} @ {baud}")
+                    ser = None
+                    try:
+                        ser = serial.Serial(
+                            port, baud,
+                            bytesize=8, parity="N", stopbits=1,
+                            timeout=0.35
+                        )
+                        ser.reset_input_buffer()
+                        start = time.time()
+                        valid = 0
+                        while time.time() - start < 2.2:
+                            raw = ser.readline()
+                            if not raw:
+                                continue
+                            line = raw.decode("ascii", errors="ignore").strip()
+                            if line.startswith("$") and any(
+                                x in line for x in ("RMC", "GGA", "GLL")
+                            ):
+                                valid += 1
+                                if valid >= 2:
+                                    break
+
+                        if valid >= 2:
+                            try:
+                                n = port.upper().replace("COM", "")
+                            except Exception:
+                                n = port
+                            self.detected_baud = baud
+
+                            def apply_found(port_number=n, found_baud=baud):
+                                self.source_port.delete(0, "end")
+                                self.source_port.insert(0, port_number)
+                                self.baud_label.config(
+                                    text=f"Baud Rate：{found_baud}"
+                                )
+                                self.gps_status_label.config(
+                                    text=f"● GPS 已找到：COM{port_number}"
+                                )
+
+                            self.root.after(0, apply_found)
+                            self.log(f"成功找到 GPS：{port} @ {baud}")
+                            self.save_config()
+                            return
+                    except Exception as e:
+                        self.log(f"{port} @ {baud}：{e}")
+                    finally:
+                        try:
+                            if ser and ser.is_open:
+                                ser.close()
+                        except Exception:
+                            pass
+
+            self.detected_baud = None
+            self.root.after(
+                0, lambda: self.gps_status_label.config(text="● 找不到 GPS")
+            )
+            self.root.after(
+                0, lambda: self.baud_label.config(text="Baud Rate：偵測失敗")
+            )
+            self.log("自動尋找完成：沒有找到可辨識的 NMEA GPS")
+        finally:
+            self.scan_in_progress = False
 
     def start_baud_scan(self):
         n = self.source_port.get().strip()
@@ -551,7 +665,7 @@ class GPSSplitter:
             pass
 
     def load_config(self):
-        self.source_port.insert(0, "11")
+        self.source_port.insert(0, "")
         defaults = ["5", "6", "7", "8", "9"]
         if not os.path.exists(CONFIG_FILE):
             return
@@ -559,7 +673,7 @@ class GPSSplitter:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.source_port.delete(0, "end")
-            self.source_port.insert(0, cfg.get("source") or "11")
+            self.source_port.insert(0, cfg.get("source") or "")
             self.detected_baud = cfg.get("baud")
             if self.detected_baud:
                 self.baud_label.config(text=f"Baud Rate：{self.detected_baud}")
