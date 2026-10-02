@@ -21,24 +21,26 @@ $txt = $txt.Replace(
     "#define DATA_BUFFER_SIZE 1024",
     "#define DATA_BUFFER_SIZE 65536"
 )
+$queueStateReplacement = '$1' +
+    [Environment]::NewLine + [Environment]::NewLine + '    ULONG           WaitMask;           // Current SetCommMask value' +
+    [Environment]::NewLine + '    UCHAR           EofChar;' +
+    [Environment]::NewLine + '    UCHAR           ErrorChar;' +
+    [Environment]::NewLine + '    UCHAR           BreakChar;' +
+    [Environment]::NewLine + '    UCHAR           EventChar;' +
+    [Environment]::NewLine + '    UCHAR           XonChar;' +
+    [Environment]::NewLine + '    UCHAR           XoffChar;' +
+    [Environment]::NewLine + '    ULONG           ControlHandShake;' +
+    [Environment]::NewLine + '    ULONG           FlowReplace;' +
+    [Environment]::NewLine + '    LONG            XonLimit;' +
+    [Environment]::NewLine + '    LONG            XoffLimit;' +
+    [Environment]::NewLine + '    ULONG           DtrRtsState;' +
+    [Environment]::NewLine + '    ULONG           TxQueueSize;' +
+    [Environment]::NewLine + '    ULONG           RxQueueSize;'
+
 $txt = [regex]::Replace(
     $txt,
     '(?m)^(\s*WDFQUEUE\s+WaitMaskQueue;\s*// Manual queue for pending ioctl wait-on-mask)\r?$',
-    '$1'
-    + [Environment]::NewLine + [Environment]::NewLine + '    ULONG           WaitMask;           // Current SetCommMask value'
-    + [Environment]::NewLine + '    UCHAR           EofChar;'
-    + [Environment]::NewLine + '    UCHAR           ErrorChar;'
-    + [Environment]::NewLine + '    UCHAR           BreakChar;'
-    + [Environment]::NewLine + '    UCHAR           EventChar;'
-    + [Environment]::NewLine + '    UCHAR           XonChar;'
-    + [Environment]::NewLine + '    UCHAR           XoffChar;'
-    + [Environment]::NewLine + '    ULONG           ControlHandShake;'
-    + [Environment]::NewLine + '    ULONG           FlowReplace;'
-    + [Environment]::NewLine + '    LONG            XonLimit;'
-    + [Environment]::NewLine + '    LONG            XoffLimit;'
-    + [Environment]::NewLine + '    ULONG           DtrRtsState;'
-    + [Environment]::NewLine + '    ULONG           TxQueueSize;'
-    + [Environment]::NewLine + '    ULONG           RxQueueSize;',
+    $queueStateReplacement,
     1
 )
 Set-Content $queueH $txt -Encoding utf8
@@ -376,27 +378,28 @@ if (-not $txt.Contains($caseNeedle)) {
     throw "queue.c IOCTL patch anchor not found"
 }
 # Initialize WaitCommEvent state.
+$initialStateReplacement = '$0' +
+    [Environment]::NewLine + '    queueContext->WaitMask = 0;' +
+    [Environment]::NewLine + '    queueContext->EofChar = 0;' +
+    [Environment]::NewLine + '    queueContext->ErrorChar = 0;' +
+    [Environment]::NewLine + '    queueContext->BreakChar = 0;' +
+    [Environment]::NewLine + '    queueContext->EventChar = 0;' +
+    [Environment]::NewLine + '    queueContext->XonChar = 0x11;' +
+    [Environment]::NewLine + '    queueContext->XoffChar = 0x13;' +
+    [Environment]::NewLine + '    queueContext->ControlHandShake = 0;' +
+    [Environment]::NewLine + '    queueContext->FlowReplace = 0;' +
+    [Environment]::NewLine + '    queueContext->XonLimit = 0;' +
+    [Environment]::NewLine + '    queueContext->XoffLimit = 0;' +
+    [Environment]::NewLine + '    queueContext->DtrRtsState = 0;' +
+    [Environment]::NewLine + '    queueContext->TxQueueSize = 0;' +
+    [Environment]::NewLine + '    queueContext->RxQueueSize = 65536;'
+
 $txt = [regex]::Replace(
     $txt,
     'RingBufferInitialize\(&queueContext->RingBuffer,\s*queueContext->Buffer,\s*sizeof\(queueContext->Buffer\)\);',
-    '$0'
-    + [Environment]::NewLine + '    queueContext->WaitMask = 0;'
-    + [Environment]::NewLine + '    queueContext->EofChar = 0;'
-    + [Environment]::NewLine + '    queueContext->ErrorChar = 0;'
-    + [Environment]::NewLine + '    queueContext->BreakChar = 0;'
-    + [Environment]::NewLine + '    queueContext->EventChar = 0;'
-    + [Environment]::NewLine + '    queueContext->XonChar = 0x11;'
-    + [Environment]::NewLine + '    queueContext->XoffChar = 0x13;'
-    + [Environment]::NewLine + '    queueContext->ControlHandShake = 0;'
-    + [Environment]::NewLine + '    queueContext->FlowReplace = 0;'
-    + [Environment]::NewLine + '    queueContext->XonLimit = 0;'
-    + [Environment]::NewLine + '    queueContext->XoffLimit = 0;'
-    + [Environment]::NewLine + '    queueContext->DtrRtsState = 0;'
-    + [Environment]::NewLine + '    queueContext->TxQueueSize = 0;'
-    + [Environment]::NewLine + '    queueContext->RxQueueSize = 65536;',
+    $initialStateReplacement,
     1
 )
-
 # Replace the sample WaitCommEvent/SetCommMask block in place.
 $oldWaitStart = $txt.IndexOf("    case IOCTL_SERIAL_WAIT_ON_MASK:")
 $oldWaitEnd = $txt.IndexOf("    case IOCTL_SERIAL_SET_QUEUE_SIZE:")
