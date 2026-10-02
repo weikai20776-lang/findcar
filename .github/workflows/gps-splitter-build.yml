@@ -28,6 +28,10 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --windowed --name GPS_Splitter gps-splitter\app\GPS_Splitter.py
           Copy-Item dist\GPS_Splitter.exe build_bundle\app\GPS_Splitter.exe
 
+          New-Item -ItemType Directory -Force build_bundle\tools | Out-Null
+          pyinstaller --noconfirm --clean --onefile --console --name Serial_Probe gps-splitter\tools\Serial_Probe.py
+          Copy-Item dist\Serial_Probe.exe build_bundle\tools\Serial_Probe.exe
+
       - name: Checkout Microsoft Windows driver samples
         uses: actions/checkout@v4
         with:
