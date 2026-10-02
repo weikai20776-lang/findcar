@@ -8,7 +8,7 @@ Class=Ports
 ClassGuid={4D36E978-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
 CatalogFile=WUDF.cat
-DriverVer=10/02/2026,0.4.0.0
+DriverVer=10/02/2026,0.5.0.0
 PnpLockdown=1
 
 [Manufacturer]
@@ -225,8 +225,8 @@ ProviderString="GPS Splitter Project"
 ManufacturerString="GPS Splitter Project"
 MediaDescription="GPS Virtual Serial Driver"
 WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
-Port5Name="GPS Virtual Serial Port V4 COM5"
-Port6Name="GPS Virtual Serial Port V4 COM6"
-Port7Name="GPS Virtual Serial Port V4 COM7"
-Port8Name="GPS Virtual Serial Port V4 COM8"
-Port9Name="GPS Virtual Serial Port V4 COM9"
+Port5Name="GPS Virtual Serial Port V5 COM5"
+Port6Name="GPS Virtual Serial Port V5 COM6"
+Port7Name="GPS Virtual Serial Port V5 COM7"
+Port8Name="GPS Virtual Serial Port V5 COM8"
+Port9Name="GPS Virtual Serial Port V5 COM9"
