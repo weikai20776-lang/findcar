@@ -267,26 +267,15 @@ $caseReplacement = @'
 if (-not $txt.Contains($caseNeedle)) {
     throw "queue.c IOCTL patch anchor not found"
 }
+# Remove the four no-op cases from the unmodified Microsoft sample BEFORE
+# inserting the V4 handlers, so there are no duplicate switch case values.
+$txt = [regex]::Replace(
+    $txt,
+    '(?m)^\s*case IOCTL_SERIAL_(SET_CHARS|GET_CHARS|GET_HANDFLOW|SET_HANDFLOW):\r?\n',
+    ''
+)
+
 $txt = $txt.Replace($caseNeedle, $caseReplacement)
-
-# The original Microsoft sample groups these four query/set IOCTLs into a
-# no-op success block. V4 provides real handlers above, so remove the old
-# duplicate case labels while leaving the remaining no-op cases intact.
-$txt = $txt.Replace("    case IOCTL_SERIAL_SET_CHARS:`r`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_GET_CHARS:`r`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_GET_HANDFLOW:`r`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_SET_HANDFLOW:`r`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_SET_CHARS:`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_GET_CHARS:`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_GET_HANDFLOW:`n", "")
-$txt = $txt.Replace("    case IOCTL_SERIAL_SET_HANDFLOW:`n", "")
-
-# Re-insert the four V4 case labels if the cleanup above also matched the
-# newly-added handlers. We anchor on each unique handler body.
-$txt = $txt.Replace("    {`n        GPS_SERIAL_CHARS chars = {0};`n        chars.XonChar", "    case IOCTL_SERIAL_GET_CHARS:`n    {`n        GPS_SERIAL_CHARS chars = {0};`n        chars.XonChar")
-$txt = $txt.Replace("    {`n        GPS_SERIAL_CHARS chars = {0};`n        status = RequestCopyToBuffer", "    case IOCTL_SERIAL_SET_CHARS:`n    {`n        GPS_SERIAL_CHARS chars = {0};`n        status = RequestCopyToBuffer")
-$txt = $txt.Replace("    {`n        GPS_SERIAL_HANDFLOW handflow = {0};`n        status = RequestCopyFromBuffer", "    case IOCTL_SERIAL_GET_HANDFLOW:`n    {`n        GPS_SERIAL_HANDFLOW handflow = {0};`n        status = RequestCopyFromBuffer")
-$txt = $txt.Replace("    {`n        GPS_SERIAL_HANDFLOW handflow = {0};`n        status = RequestCopyToBuffer", "    case IOCTL_SERIAL_SET_HANDFLOW:`n    {`n        GPS_SERIAL_HANDFLOW handflow = {0};`n        status = RequestCopyToBuffer")
 
 Set-Content $queueC $txt -Encoding utf8
 
