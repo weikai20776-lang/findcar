@@ -44,6 +44,43 @@ typedef struct _GPS_SERIAL_STATUS {
     BOOLEAN EofReceived;
     BOOLEAN WaitForImmediate;
 } GPS_SERIAL_STATUS, *PGPS_SERIAL_STATUS;
+
+typedef struct _GPS_SERIAL_CHARS {
+    UCHAR EofChar;
+    UCHAR ErrorChar;
+    UCHAR BreakChar;
+    UCHAR EventChar;
+    UCHAR XonChar;
+    UCHAR XoffChar;
+} GPS_SERIAL_CHARS, *PGPS_SERIAL_CHARS;
+
+typedef struct _GPS_SERIAL_HANDFLOW {
+    ULONG ControlHandShake;
+    ULONG FlowReplace;
+    LONG  XonLimit;
+    LONG  XoffLimit;
+} GPS_SERIAL_HANDFLOW, *PGPS_SERIAL_HANDFLOW;
+
+typedef struct _GPS_SERIAL_COMMPROP {
+    USHORT PacketLength;
+    USHORT PacketVersion;
+    ULONG  ServiceMask;
+    ULONG  Reserved1;
+    ULONG  MaxTxQueue;
+    ULONG  MaxRxQueue;
+    ULONG  MaxBaud;
+    ULONG  ProvSubType;
+    ULONG  ProvCapabilities;
+    ULONG  SettableParams;
+    ULONG  SettableBaud;
+    USHORT SettableData;
+    USHORT SettableStopParity;
+    ULONG  CurrentTxQueue;
+    ULONG  CurrentRxQueue;
+    ULONG  ProvSpec1;
+    ULONG  ProvSpec2;
+    WCHAR  ProvChar[1];
+} GPS_SERIAL_COMMPROP, *PGPS_SERIAL_COMMPROP;
 '@
 if (-not $txt.Contains($includeNeedle)) {
     throw "queue.c include patch anchor not found"
@@ -55,6 +92,65 @@ $caseNeedle = @'
 '@
 
 $caseReplacement = @'
+    {
+        GPS_SERIAL_CHARS chars = {0};
+        chars.XonChar = 0x11;
+        chars.XoffChar = 0x13;
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &chars,
+                    sizeof(chars));
+        break;
+    }
+
+    {
+        GPS_SERIAL_CHARS chars = {0};
+        status = RequestCopyToBuffer(
+                    Request,
+                    &chars,
+                    sizeof(chars));
+        break;
+    }
+
+    {
+        GPS_SERIAL_HANDFLOW handflow = {0};
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &handflow,
+                    sizeof(handflow));
+        break;
+    }
+
+    {
+        GPS_SERIAL_HANDFLOW handflow = {0};
+        status = RequestCopyToBuffer(
+                    Request,
+                    &handflow,
+                    sizeof(handflow));
+        break;
+    }
+
+    case IOCTL_SERIAL_GET_PROPERTIES:
+    {
+        GPS_SERIAL_COMMPROP properties = {0};
+
+        properties.PacketLength = (USHORT)sizeof(properties);
+        properties.PacketVersion = 2;
+        properties.ServiceMask = 1;
+        properties.MaxTxQueue = 0;
+        properties.MaxRxQueue = 65536;
+        properties.MaxBaud = 115200;
+        properties.ProvSubType = 1;
+        properties.CurrentTxQueue = 0;
+        properties.CurrentRxQueue = 65536;
+
+        status = RequestCopyFromBuffer(
+                    Request,
+                    &properties,
+                    sizeof(properties));
+        break;
+    }
+
     case IOCTL_SERIAL_GET_COMMSTATUS:
     {
         GPS_SERIAL_STATUS commStatus = {0};
