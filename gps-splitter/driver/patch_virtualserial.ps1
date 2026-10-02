@@ -92,6 +92,7 @@ $caseNeedle = @'
 '@
 
 $caseReplacement = @'
+    case IOCTL_SERIAL_GET_CHARS:
     {
         GPS_SERIAL_CHARS chars = {0};
         chars.XonChar = 0x11;
@@ -103,6 +104,7 @@ $caseReplacement = @'
         break;
     }
 
+    case IOCTL_SERIAL_SET_CHARS:
     {
         GPS_SERIAL_CHARS chars = {0};
         status = RequestCopyToBuffer(
@@ -112,6 +114,7 @@ $caseReplacement = @'
         break;
     }
 
+    case IOCTL_SERIAL_GET_HANDFLOW:
     {
         GPS_SERIAL_HANDFLOW handflow = {0};
         status = RequestCopyFromBuffer(
@@ -121,6 +124,7 @@ $caseReplacement = @'
         break;
     }
 
+    case IOCTL_SERIAL_SET_HANDFLOW:
     {
         GPS_SERIAL_HANDFLOW handflow = {0};
         status = RequestCopyToBuffer(
