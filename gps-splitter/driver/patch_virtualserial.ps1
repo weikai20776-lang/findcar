@@ -24,7 +24,21 @@ $txt = $txt.Replace(
 $txt = [regex]::Replace(
     $txt,
     '(?m)^(\s*WDFQUEUE\s+WaitMaskQueue;\s*// Manual queue for pending ioctl wait-on-mask)\r?$',
-    '$1' + [Environment]::NewLine + [Environment]::NewLine + '    ULONG           WaitMask;           // Current SetCommMask value',
+    '$1'
+    + [Environment]::NewLine + [Environment]::NewLine + '    ULONG           WaitMask;           // Current SetCommMask value'
+    + [Environment]::NewLine + '    UCHAR           EofChar;'
+    + [Environment]::NewLine + '    UCHAR           ErrorChar;'
+    + [Environment]::NewLine + '    UCHAR           BreakChar;'
+    + [Environment]::NewLine + '    UCHAR           EventChar;'
+    + [Environment]::NewLine + '    UCHAR           XonChar;'
+    + [Environment]::NewLine + '    UCHAR           XoffChar;'
+    + [Environment]::NewLine + '    ULONG           ControlHandShake;'
+    + [Environment]::NewLine + '    ULONG           FlowReplace;'
+    + [Environment]::NewLine + '    LONG            XonLimit;'
+    + [Environment]::NewLine + '    LONG            XoffLimit;'
+    + [Environment]::NewLine + '    ULONG           DtrRtsState;'
+    + [Environment]::NewLine + '    ULONG           TxQueueSize;'
+    + [Environment]::NewLine + '    ULONG           RxQueueSize;',
     1
 )
 Set-Content $queueH $txt -Encoding utf8
@@ -99,45 +113,91 @@ $caseNeedle = @'
 '@
 
 $caseReplacement = @'
+    case IOCTL_SERIAL_SET_QUEUE_SIZE:
+    {
+        struct { ULONG InSize; ULONG OutSize; } queueSize = {0};
+        status = RequestCopyToBuffer(Request, &queueSize, sizeof(queueSize));
+        if (NT_SUCCESS(status)) {
+            queueContext->RxQueueSize = (queueSize.InSize > 65536) ? 65536 : queueSize.InSize;
+            queueContext->TxQueueSize = queueSize.OutSize;
+        }
+        break;
+    }
+
+    case IOCTL_SERIAL_SET_DTR:
+        queueContext->DtrRtsState |= 0x00000001;
+        status = STATUS_SUCCESS;
+        break;
+
+    case IOCTL_SERIAL_CLR_DTR:
+        queueContext->DtrRtsState &= ~0x00000001;
+        status = STATUS_SUCCESS;
+        break;
+
+    case IOCTL_SERIAL_SET_RTS:
+        queueContext->DtrRtsState |= 0x00000002;
+        status = STATUS_SUCCESS;
+        break;
+
+    case IOCTL_SERIAL_CLR_RTS:
+        queueContext->DtrRtsState &= ~0x00000002;
+        status = STATUS_SUCCESS;
+        break;
+
+    case IOCTL_SERIAL_SET_BREAK_ON:
+    case IOCTL_SERIAL_SET_BREAK_OFF:
+    case IOCTL_SERIAL_IMMEDIATE_CHAR:
+        status = STATUS_SUCCESS;
+        break;
     case IOCTL_SERIAL_GET_CHARS:
     {
         GPS_SERIAL_CHARS chars = {0};
-        chars.XonChar = 0x11;
-        chars.XoffChar = 0x13;
-        status = RequestCopyFromBuffer(
-                    Request,
-                    &chars,
-                    sizeof(chars));
+        chars.EofChar = queueContext->EofChar;
+        chars.ErrorChar = queueContext->ErrorChar;
+        chars.BreakChar = queueContext->BreakChar;
+        chars.EventChar = queueContext->EventChar;
+        chars.XonChar = queueContext->XonChar;
+        chars.XoffChar = queueContext->XoffChar;
+        status = RequestCopyFromBuffer(Request, &chars, sizeof(chars));
         break;
     }
 
     case IOCTL_SERIAL_SET_CHARS:
     {
         GPS_SERIAL_CHARS chars = {0};
-        status = RequestCopyToBuffer(
-                    Request,
-                    &chars,
-                    sizeof(chars));
+        status = RequestCopyToBuffer(Request, &chars, sizeof(chars));
+        if (NT_SUCCESS(status)) {
+            queueContext->EofChar = chars.EofChar;
+            queueContext->ErrorChar = chars.ErrorChar;
+            queueContext->BreakChar = chars.BreakChar;
+            queueContext->EventChar = chars.EventChar;
+            queueContext->XonChar = chars.XonChar;
+            queueContext->XoffChar = chars.XoffChar;
+        }
         break;
     }
 
     case IOCTL_SERIAL_GET_HANDFLOW:
     {
         GPS_SERIAL_HANDFLOW handflow = {0};
-        status = RequestCopyFromBuffer(
-                    Request,
-                    &handflow,
-                    sizeof(handflow));
+        handflow.ControlHandShake = queueContext->ControlHandShake;
+        handflow.FlowReplace = queueContext->FlowReplace;
+        handflow.XonLimit = queueContext->XonLimit;
+        handflow.XoffLimit = queueContext->XoffLimit;
+        status = RequestCopyFromBuffer(Request, &handflow, sizeof(handflow));
         break;
     }
 
     case IOCTL_SERIAL_SET_HANDFLOW:
     {
         GPS_SERIAL_HANDFLOW handflow = {0};
-        status = RequestCopyToBuffer(
-                    Request,
-                    &handflow,
-                    sizeof(handflow));
+        status = RequestCopyToBuffer(Request, &handflow, sizeof(handflow));
+        if (NT_SUCCESS(status)) {
+            queueContext->ControlHandShake = handflow.ControlHandShake;
+            queueContext->FlowReplace = handflow.FlowReplace;
+            queueContext->XonLimit = handflow.XonLimit;
+            queueContext->XoffLimit = handflow.XoffLimit;
+        }
         break;
     }
 
@@ -159,8 +219,8 @@ $caseReplacement = @'
         properties.SettableParams = 0x0000007F;
         properties.SettableData = 0x000F;
         properties.SettableStopParity = 0x1F07;
-        properties.CurrentTxQueue = 0;
-        properties.CurrentRxQueue = 65536;
+        properties.CurrentTxQueue = queueContext->TxQueueSize;
+        properties.CurrentRxQueue = queueContext->RxQueueSize;
 
         status = RequestCopyFromBuffer(
                     Request,
@@ -202,7 +262,7 @@ $caseReplacement = @'
                     &purgeMask,
                     sizeof(purgeMask));
 
-        if (NT_SUCCESS(status)) {
+        if (NT_SUCCESS(status) && (purgeMask & 0x00000008)) {
             RingBufferInitialize(
                     &queueContext->RingBuffer,
                     queueContext->Buffer,
@@ -213,13 +273,16 @@ $caseReplacement = @'
     }
 
     case IOCTL_SERIAL_GET_MODEMSTATUS:
+    {
+        ULONG value = 0x000000B0; // CTS | DSR | DCD asserted
+        status = RequestCopyFromBuffer(Request, &value, sizeof(value));
+        break;
+    }
+
     case IOCTL_SERIAL_GET_DTRRTS:
     {
-        ULONG value = 0;
-        status = RequestCopyFromBuffer(
-                    Request,
-                    &value,
-                    sizeof(value));
+        ULONG value = queueContext->DtrRtsState;
+        status = RequestCopyFromBuffer(Request, &value, sizeof(value));
         break;
     }
 
@@ -316,7 +379,21 @@ if (-not $txt.Contains($caseNeedle)) {
 $txt = [regex]::Replace(
     $txt,
     'RingBufferInitialize\(&queueContext->RingBuffer,\s*queueContext->Buffer,\s*sizeof\(queueContext->Buffer\)\);',
-    '$0' + [Environment]::NewLine + '    queueContext->WaitMask = 0;',
+    '$0'
+    + [Environment]::NewLine + '    queueContext->WaitMask = 0;'
+    + [Environment]::NewLine + '    queueContext->EofChar = 0;'
+    + [Environment]::NewLine + '    queueContext->ErrorChar = 0;'
+    + [Environment]::NewLine + '    queueContext->BreakChar = 0;'
+    + [Environment]::NewLine + '    queueContext->EventChar = 0;'
+    + [Environment]::NewLine + '    queueContext->XonChar = 0x11;'
+    + [Environment]::NewLine + '    queueContext->XoffChar = 0x13;'
+    + [Environment]::NewLine + '    queueContext->ControlHandShake = 0;'
+    + [Environment]::NewLine + '    queueContext->FlowReplace = 0;'
+    + [Environment]::NewLine + '    queueContext->XonLimit = 0;'
+    + [Environment]::NewLine + '    queueContext->XoffLimit = 0;'
+    + [Environment]::NewLine + '    queueContext->DtrRtsState = 0;'
+    + [Environment]::NewLine + '    queueContext->TxQueueSize = 0;'
+    + [Environment]::NewLine + '    queueContext->RxQueueSize = 65536;',
     1
 )
 
@@ -391,19 +468,18 @@ $newWaitBlock = @'
 
 $txt = $txt.Substring(0, $oldWaitStart) + $newWaitBlock + $txt.Substring($oldWaitEnd)
 
-# MSComm EscapeCommFunction can issue CLRDTR.
-$txt = [regex]::Replace(
-    $txt,
-    '(?m)^(\s*case IOCTL_SERIAL_SET_DTR:\r?)$',
-    '$1' + [Environment]::NewLine + '    case IOCTL_SERIAL_CLR_DTR:',
-    1
-)
 # Remove the four no-op cases from the unmodified Microsoft sample BEFORE
 # inserting the V4 handlers, so there are no duplicate switch case values.
 $txt = [regex]::Replace(
     $txt,
-    '(?m)^\s*case IOCTL_SERIAL_(SET_CHARS|GET_CHARS|GET_HANDFLOW|SET_HANDFLOW):\r?\n',
+    '(?m)^\s*case IOCTL_SERIAL_(SET_QUEUE_SIZE|SET_DTR|CLR_DTR|SET_RTS|CLR_RTS|SET_BREAK_ON|SET_BREAK_OFF|IMMEDIATE_CHAR|SET_CHARS|GET_CHARS|GET_HANDFLOW|SET_HANDFLOW):\r?\n',
     ''
+)
+
+# Make GetCommTimeouts round-trip the values previously supplied by SetCommTimeouts.
+$txt = $txt.Replace(
+    '        SERIAL_TIMEOUTS timeoutValues = {0};' + [Environment]::NewLine + [Environment]::NewLine + '        status = RequestCopyFromBuffer(Request,',
+    '        SERIAL_TIMEOUTS timeoutValues = {0};' + [Environment]::NewLine + [Environment]::NewLine + '        GetTimeouts(deviceContext, &timeoutValues);' + [Environment]::NewLine + [Environment]::NewLine + '        status = RequestCopyFromBuffer(Request,'
 )
 
 $txt = $txt.Replace($caseNeedle, $caseReplacement)
