@@ -120,8 +120,10 @@ $caseReplacement = @'
         struct { ULONG InSize; ULONG OutSize; } queueSize = {0};
         status = RequestCopyToBuffer(Request, &queueSize, sizeof(queueSize));
         if (NT_SUCCESS(status)) {
-            queueContext->RxQueueSize = (queueSize.InSize > 65536) ? 65536 : queueSize.InSize;
-            queueContext->TxQueueSize = queueSize.OutSize;
+            // Accept SetupComm like the physical GPS driver; keep the driver's
+            // own reported queue sizes (Tx=0, Rx=16384).
+            queueContext->RxQueueSize = 16384;
+            queueContext->TxQueueSize = 0;
         }
         break;
     }
@@ -211,18 +213,16 @@ $caseReplacement = @'
         properties.PacketVersion = 2;
         properties.ServiceMask = 1;
         properties.MaxTxQueue = 0;
-        properties.MaxRxQueue = 65536;
-        properties.MaxBaud = 0x00020000;
-        properties.SettableBaud =
-            0x00000200 | 0x00000800 | 0x00002000 |
-            0x00004000 | 0x00020000 | 0x00040000;
-        properties.ProvSubType = 1;
-        properties.ProvCapabilities = 0x000000FF;
+        properties.MaxRxQueue = 0;
+        properties.MaxBaud = 0x10000000;
+        properties.SettableBaud = 0x00066B70;
+        properties.ProvSubType = 6;
+        properties.ProvCapabilities = 0x000000CD;
         properties.SettableParams = 0x0000007F;
-        properties.SettableData = 0x000F;
-        properties.SettableStopParity = 0x1F07;
-        properties.CurrentTxQueue = queueContext->TxQueueSize;
-        properties.CurrentRxQueue = queueContext->RxQueueSize;
+        properties.SettableData = 0x000C;
+        properties.SettableStopParity = 0x1F01;
+        properties.CurrentTxQueue = 0;
+        properties.CurrentRxQueue = 16384;
 
         status = RequestCopyFromBuffer(
                     Request,
@@ -276,7 +276,7 @@ $caseReplacement = @'
 
     case IOCTL_SERIAL_GET_MODEMSTATUS:
     {
-        ULONG value = 0x000000B0; // CTS | DSR | DCD asserted
+        ULONG value = 0x00000000; // Match physical GPS COM profile
         status = RequestCopyFromBuffer(Request, &value, sizeof(value));
         break;
     }
@@ -313,6 +313,21 @@ $caseReplacement = @'
                 status = STATUS_BUFFER_TOO_SMALL;
             }
             else if (InputBufferLength > 0) {
+                size_t queuedBeforeInject = 0;
+                RingBufferGetAvailableData(
+                                &queueContext->RingBuffer,
+                                &queuedBeforeInject);
+
+                // A real GPS COM port does not present tens of KB of stale
+                // pre-open data to a newly opened legacy client. Keep only a
+                // small recent window if nobody is draining the virtual port.
+                if (queuedBeforeInject > 4096) {
+                    RingBufferInitialize(
+                                &queueContext->RingBuffer,
+                                queueContext->Buffer,
+                                sizeof(queueContext->Buffer));
+                }
+
                 status = RingBufferWrite(
                                 &queueContext->RingBuffer,
                                 inputBuffer,
@@ -384,15 +399,16 @@ $initialStateReplacement = '$0' +
     [Environment]::NewLine + '    queueContext->ErrorChar = 0;' +
     [Environment]::NewLine + '    queueContext->BreakChar = 0;' +
     [Environment]::NewLine + '    queueContext->EventChar = 0;' +
-    [Environment]::NewLine + '    queueContext->XonChar = 0x11;' +
-    [Environment]::NewLine + '    queueContext->XoffChar = 0x13;' +
-    [Environment]::NewLine + '    queueContext->ControlHandShake = 0;' +
-    [Environment]::NewLine + '    queueContext->FlowReplace = 0;' +
+    [Environment]::NewLine + '    queueContext->XonChar = 0x00;' +
+    [Environment]::NewLine + '    queueContext->XoffChar = 0x00;' +
+    [Environment]::NewLine + '    queueContext->ControlHandShake = 0x00000001;' +
+    [Environment]::NewLine + '    queueContext->FlowReplace = 0x00000040;' +
     [Environment]::NewLine + '    queueContext->XonLimit = 0;' +
     [Environment]::NewLine + '    queueContext->XoffLimit = 0;' +
-    [Environment]::NewLine + '    queueContext->DtrRtsState = 0;' +
+    [Environment]::NewLine + '    queueContext->DtrRtsState = 0x00000003;' +
     [Environment]::NewLine + '    queueContext->TxQueueSize = 0;' +
-    [Environment]::NewLine + '    queueContext->RxQueueSize = 65536;'
+    [Environment]::NewLine + '    queueContext->RxQueueSize = 16384;' +
+    [Environment]::NewLine + '    { SERIAL_TIMEOUTS gpsInitialTimeouts = {0}; SetTimeouts(DeviceContext, gpsInitialTimeouts); }'
 
 $txt = [regex]::Replace(
     $txt,
