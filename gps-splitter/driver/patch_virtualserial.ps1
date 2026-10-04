@@ -5,6 +5,7 @@ $deviceH = Join-Path $root "device.h"
 $deviceC = Join-Path $root "device.c"
 $queueH  = Join-Path $root "queue.h"
 $queueC  = Join-Path $root "queue.c"
+$deviceC = Join-Path $root "device.c"
 
 Write-Host "Patching VirtualSerial2 sources for GPS injection control channel..."
 
@@ -14,6 +15,13 @@ $txt = $txt.Replace(
     "#define SYMBOLIC_LINK_NAME_LENGTH   32",
     "#define SYMBOLIC_LINK_NAME_LENGTH   64"
 )
+$fileCreatePrototype = @'
+
+EVT_WDF_DEVICE_FILE_CREATE EvtDeviceFileCreate;
+'@
+if (-not $txt.Contains('EVT_WDF_DEVICE_FILE_CREATE EvtDeviceFileCreate;')) {
+    $txt = $txt + $fileCreatePrototype
+}
 Set-Content $deviceH $txt -Encoding utf8
 
 $txt = Get-Content $queueH -Raw
@@ -44,6 +52,108 @@ $txt = [regex]::Replace(
     1
 )
 Set-Content $queueH $txt -Encoding utf8
+
+# Reset user-visible serial defaults whenever a client opens the COM port.
+# This prevents stale DCB/timeout state from an earlier program from carrying
+# into 8WIN/MSComm and makes each open resemble a fresh physical GPS COM port.
+$dev = Get-Content $deviceC -Raw
+
+$createNeedle = @'
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(
+                            &deviceAttributes,
+                            DEVICE_CONTEXT);
+'@
+$createReplacement = @'
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(
+                            &deviceAttributes,
+                            DEVICE_CONTEXT);
+
+    WDF_FILEOBJECT_CONFIG fileConfig;
+    WDF_FILEOBJECT_CONFIG_INIT(
+                            &fileConfig,
+                            EvtDeviceFileCreate,
+                            WDF_NO_EVENT_CALLBACK,
+                            WDF_NO_EVENT_CALLBACK);
+    WdfDeviceInitSetFileObjectConfig(
+                            DeviceInit,
+                            &fileConfig,
+                            WDF_NO_OBJECT_ATTRIBUTES);
+'@
+if (-not $dev.Contains($createNeedle)) {
+    throw "device.c file-object config anchor not found"
+}
+$dev = $dev.Replace($createNeedle, $createReplacement)
+
+$deviceCreateEndNeedle = @'
+    return status;
+}
+
+
+NTSTATUS
+DeviceConfigure(
+'@
+
+$fileCreateImplementation = @'
+    return status;
+}
+
+
+VOID
+EvtDeviceFileCreate(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ WDFFILEOBJECT FileObject
+    )
+{
+    PDEVICE_CONTEXT deviceContext = GetDeviceContext(Device);
+    WDFQUEUE defaultQueue = WdfDeviceGetDefaultQueue(Device);
+
+    UNREFERENCED_PARAMETER(FileObject);
+
+    if (defaultQueue != NULL) {
+        PQUEUE_CONTEXT queueContext = GetQueueContext(defaultQueue);
+
+        queueContext->WaitMask = 0;
+        queueContext->EofChar = 0;
+        queueContext->ErrorChar = 0;
+        queueContext->BreakChar = 0;
+        queueContext->EventChar = 0;
+        queueContext->XonChar = 0;
+        queueContext->XoffChar = 0;
+        queueContext->ControlHandShake = 0x00000001; // SERIAL_DTR_CONTROL
+        queueContext->FlowReplace = 0x00000040;      // SERIAL_RTS_CONTROL
+        queueContext->XonLimit = 0;
+        queueContext->XoffLimit = 0;
+        queueContext->DtrRtsState = 0x00000003;
+        queueContext->TxQueueSize = 0;
+        queueContext->RxQueueSize = 16384;
+
+        // Drop data that accumulated before this consumer opened the port.
+        RingBufferInitialize(
+                        &queueContext->RingBuffer,
+                        queueContext->Buffer,
+                        sizeof(queueContext->Buffer));
+    }
+
+    {
+        SERIAL_TIMEOUTS timeouts = {0};
+        SetTimeouts(deviceContext, timeouts);
+    }
+
+    WdfRequestComplete(Request, STATUS_SUCCESS);
+}
+
+
+NTSTATUS
+DeviceConfigure(
+'@
+
+if (-not $dev.Contains($deviceCreateEndNeedle)) {
+    throw "device.c DeviceCreate end anchor not found"
+}
+$dev = $dev.Replace($deviceCreateEndNeedle, $fileCreateImplementation)
+
+Set-Content $deviceC $dev -Encoding utf8
 
 # Add custom injection IOCTL.
 $txt = Get-Content $queueC -Raw
