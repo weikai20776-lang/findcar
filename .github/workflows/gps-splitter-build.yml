@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gps-splitter-driver
+      - gps-splitter-vcom-track
   workflow_dispatch:
 
 jobs:
